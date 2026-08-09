@@ -379,6 +379,15 @@ void ABlasterPlayerController::SetHUDAnnouncementCountdown(float CountdownTime)
 }
 
 // ------------------------------------------------------------
+// 时间同步中位数滤波窗口（样本数）：每 5s 一个样本，N=7 需 35s 填满。
+// 抗主机延迟尖峰：单次采样会被某次系统忙的读数带偏，取中位更稳。
+TAutoConsoleVariable<int32> CVarTimeSyncMedianWindow(
+	TEXT("blaster.TimeSync.MedianWindowSize"),
+	7,
+	TEXT("时间同步中位数滤波窗口（样本数），抗主机延迟尖峰"),
+	ECVF_Default
+);
+
 // 时间同步：客户端定期向服务器请求时间，计算出 ClientServerDelta
 // 然后 GetServerTime() 就能返回接近服务器的时间
 // ------------------------------------------------------------
@@ -684,7 +693,21 @@ void ABlasterPlayerController::ClientReportServerTime_Implementation(float TimeO
 	float RoundTripTime = GetWorld()->GetTimeSeconds() - TimeOfClientRequest;
 	SingleTripTime = 0.5f * RoundTripTime;
 	float CurrentServerTime = TimeServerReceivedClientRequest + SingleTripTime;
-	ClientServerDelta = CurrentServerTime - GetWorld()->GetTimeSeconds();
+	const float RawDelta = CurrentServerTime - GetWorld()->GetTimeSeconds();
+
+	// ── 中位数滤波：抗主机延迟尖峰 ──
+	// 单次采样会被"某次系统忙/网络抖动"的读数带偏；累积样本取中位更稳。
+	// 窗口大小由 CVar blaster.TimeSync.MedianWindowSize 控制（默认 7）。
+	DeltaSamples.Add(RawDelta);
+	const int32 MaxSamples = CVarTimeSyncMedianWindow.GetValueOnGameThread();
+	while (DeltaSamples.Num() > MaxSamples)
+	{
+		DeltaSamples.RemoveAt(0);  // 滚动窗口：只保留最近 MaxSamples 个
+	}
+
+	TArray<float> Sorted = DeltaSamples;
+	Sorted.Sort();
+	ClientServerDelta = Sorted[Sorted.Num() / 2];  // 取中位（抗尖峰，偏移估计更稳）
 }
 
 float ABlasterPlayerController::GetServerTime()

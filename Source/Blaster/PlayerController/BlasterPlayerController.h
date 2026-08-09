@@ -149,6 +149,10 @@ protected:
 
 	float ClientServerDelta = 0.f;
 
+	// 中位数滤波样本窗口：累积每次时间同步测得的偏移，取中位抗主机延迟尖峰。
+	// 窗口大小由 CVar blaster.TimeSync.MedianWindowSize 控制（默认 7）
+	TArray<float> DeltaSamples;
+
 	// P3 开火时间窗校验：服务端收到过时间同步请求 → true（见 HasSyncedServerTime）
 	bool bHasSyncedTime = false;
 

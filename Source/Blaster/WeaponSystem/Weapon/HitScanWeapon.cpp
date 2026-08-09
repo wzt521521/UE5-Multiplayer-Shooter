@@ -27,7 +27,7 @@ void AHitScanWeapon::Fire(const FVector& HitTarget)
 			Start.X, Start.Y, Start.Z,
 			HitTarget.X, HitTarget.Y, HitTarget.Z);
 
-		// ── 打射线：从枪口到瞄准点，看打中了什么 ──
+		// ── 打射线：从枪口到瞄准点，看打中了什么 ──	客户端也打射线！（但只为找命中点播特效）
 		FHitResult FireHit;
 		WeaponTraceHit(Start, HitTarget, FireHit); // 引擎单通道射线检测(ECC_Visibility)，返回命中Actor/骨骼名/落点
 

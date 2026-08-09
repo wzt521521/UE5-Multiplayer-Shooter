@@ -118,20 +118,24 @@ static FSSR_TraceResult MathTraceSingleRay(
 	ABlasterCharacter* Shooter)
 {
 	FSSR_TraceResult Result;
-	const FVector RayDir = (TraceEnd - TraceStart).GetSafeNormal();
-	const float MaxDist = (TraceEnd - TraceStart).Size();
 
-	float BestT = TNumericLimits<float>::Max();
-	ABlasterCharacter* BestChar = nullptr;
-	FName BestBone = NAME_None;
+	// ── 射线准备 ──
+	const FVector RayDir = (TraceEnd - TraceStart).GetSafeNormal();  // 方向归一化成单位向量（t 即世界距离 cm）
+	const float MaxDist = (TraceEnd - TraceStart).Size();            // 射线总长 = 最大命中距离（超出射程不算命中）
 
+	float BestT = TNumericLimits<float>::Max();   // 目前最近命中的距离（初始"无穷大"）
+	ABlasterCharacter* BestChar = nullptr;         // 目前最近的命中者（初始"没人"）
+	FName BestBone = NAME_None;                    // 目前命中的部位（初始"无"）
+
+	// ── 遍历历史帧里的所有玩家，对每人打这根射线 ──
 	for (const FSSR_PlayerFrameEntry& Entry : HistoricalFrame.PlayerEntries)
 	{
+		// 跳过三类：快照角色已销毁（弱引用自动置空）/ 射击者自己 / 已死亡
 		if (!Entry.Character.IsValid()) continue;
 		ABlasterCharacter* OtherChar = Entry.Character.Get();
 		if (OtherChar == Shooter || OtherChar->IsElimmed()) continue;
 
-		// 诊断
+		// 诊断日志：打印历史快照姿势 + 射线，排查两端姿态/位置偏差（对照客户端枪口）
 		UE_LOG(LogTemp, Warning, TEXT("[SSR]   MATH | Target=%s | HistCaps=(%.0f,%.0f,%.0f) H=%.0f R=%.0f | Bones=%d | RayStart=(%.0f,%.0f,%.0f) | RayDir=(%.3f,%.3f,%.3f)"),
 			*GetNameSafe(OtherChar),
 			Entry.CapsuleLocation.X, Entry.CapsuleLocation.Y, Entry.CapsuleLocation.Z,
@@ -141,18 +145,21 @@ static FSSR_TraceResult MathTraceSingleRay(
 			RayDir.X, RayDir.Y, RayDir.Z);
 
 		// 1. 骨骼球体命中（用于判定爆头/肢体）
+		//    对每根骨骼的小球（球心 = Bone.Location，半径 = BONE_RADIUS）做射线相交
 		for (const FSSR_BoneSnapshot& Bone : Entry.BoneSnapshots)
 		{
 			const float t = RaySphereIntersect(TraceStart, RayDir, Bone.Location, BONE_RADIUS);
+			// 有效命中三条件：射线前方(t>0) + 射程内(t<=MaxDist) + 比当前最近更近(t<BestT)
 			if (t > 0.f && t <= MaxDist && t < BestT)
 			{
 				BestT = t;
 				BestChar = OtherChar;
-				BestBone = Bone.BoneName;
+				BestBone = Bone.BoneName;  // 记住是哪个部位（head = 爆头）
 			}
 		}
 
 		// 2. 胶囊体命中（覆盖整个身体，兜底）
+		//    骨骼球都没中时，整身胶囊体接住 → BoneName 置 None = 普通身体伤害
 		const float tCapsule = RayCapsuleIntersect(TraceStart, RayDir,
 			Entry.CapsuleLocation, Entry.CapsuleRotation,
 			Entry.CapsuleHalfHeight, Entry.CapsuleRadius);
@@ -160,16 +167,17 @@ static FSSR_TraceResult MathTraceSingleRay(
 		{
 			BestT = tCapsule;
 			BestChar = OtherChar;
-			BestBone = NAME_None;
+			BestBone = NAME_None;  // 身体命中，不是具体部位
 		}
 	}
 
+	// ── 组装结果：有最近命中才填，没命中返回空（调用方走兜底）──
 	if (BestChar)
 	{
 		Result.bHit = true;
-		Result.ImpactPoint = TraceStart + RayDir * BestT;
-		Result.BoneName = BestBone;
-		Result.HitActor = BestChar;
+		Result.ImpactPoint = TraceStart + RayDir * BestT;  // 命中点 = 起点 + 方向 × 最近 t
+		Result.BoneName = BestBone;                        // 部位（ApplySSRDamage 判爆头用）
+		Result.HitActor = BestChar;                        // 被命中角色（伤害对象）
 
 		UE_LOG(LogTemp, Log, TEXT("[SSR] ✓ MATH HIT | Target=%s | Bone=%s | Impact=(%.0f, %.0f, %.0f) | t=%.1f"),
 			*GetNameSafe(BestChar),
@@ -206,16 +214,26 @@ static const FSSR_FrameSnapshot* FindRewindFrame(
 	UWorld* World, USSR_FrameHistory* FrameHistory,
 	float ClientShotServerTime, FStringView CallerName)
 {
+	// ① 服务器当前时间 = "子弹数据到达"的时刻
 	const double ServerNow = World->GetTimeSeconds();
+	// ② 单向延迟 = 现在 - 客户端报的开枪时刻（子弹"在路上"多久）
 	double OneWayDelay = ServerNow - ClientShotServerTime;
-	OneWayDelay = FMath::Clamp(OneWayDelay, 0.0, (double)CVarSSRMaxPingCompensation.GetValueOnGameThread());
+	// ③ ★回退限制：Clamp 到 [0, 0.25s]——正常延迟原样回退；
+	//   超过上限（高延迟/伪造时间戳）截断，防无限回退（防"预判作弊"）
+	OneWayDelay = FMath::Clamp( OneWayDelay,   0.0,   (double)CVarSSRMaxPingCompensation.GetValueOnGameThread() );
+	//             └─钳制函数┘  └─被限制的值┘  └─下限┘  └─上限（0.25s）┘
 
+
+	// 诊断日志：打印两端时间与截断后延迟（毫秒），排查时钟同步误差
 	UE_LOG(LogTemp, Verbose, TEXT("[SSR] %.*s | ServerNow=%.3f | ClientTime=%.3f | ClampedDelay=%.1fms"),
 		CallerName.Len(), CallerName.GetData(), ServerNow, ClientShotServerTime, OneWayDelay * 1000.0);
 
+	// ④ 回退目标时刻 = 现在 - 延迟 = "客户端开枪那一刻"（换算成服务器时间）
 	const double RewindTargetTime = ServerNow - OneWayDelay;
+	// ⑤ 在历史缓冲里找"≤ 开枪时刻的最新帧"——这就是要拿去判定命中的那一帧
 	const FSSR_FrameSnapshot* Frame = FrameHistory->FindSnapshot(RewindTargetTime);
 
+	// 历史不足（目标比最老帧还早，如开局前 0.5s）→ 返回空，调用方走当前帧兜底
 	if (!Frame)
 	{
 		UE_LOG(LogTemp, Verbose, TEXT("[SSR] → No historical snapshot for t=%.3f (count=%d)"),
@@ -237,25 +255,32 @@ FSSR_TraceResult USSR_RewindManager::ProcessHitScanShot(
 	float ClientShotServerTime)
 {
 	FSSR_TraceResult Result;
-	if (!Shooter || !Weapon || !GameState.IsValid()) return Result;
-	if (!CVarSSREnabled.GetValueOnGameThread()) return Result;
+
+	// ── 防御检查：任一不满足直接返回空（调用方走当前帧兜底）──
+	if (!Shooter || !Weapon || !GameState.IsValid()) return Result;   // 参数 / GameState 无效
+	if (!CVarSSREnabled.GetValueOnGameThread()) return Result;         // SSR 总开关关闭
 
 	UWorld* World = GetWorld();
 	if (!World) return Result;
 
-	USSR_FrameHistory* FrameHistory = GameState->GetSSRFrameHistory();
+	USSR_FrameHistory* FrameHistory = GameState->GetSSRFrameHistory(); // 拿帧历史（录制方）
 	if (!FrameHistory) return Result;
 
+	// ClientShotTime = 客户端上报的"估计服务器时刻"
+
+	//拿"客户端开枪那一刻"对应的历史帧（回退的核心动作）
 	const FSSR_FrameSnapshot* HistoricalFrame = FindRewindFrame(World, FrameHistory, ClientShotServerTime, TEXT("ProcessHitScan"));
-	if (!HistoricalFrame) return Result;
+	if (!HistoricalFrame) return Result;   // 没拿到帧 → 直接返回空结果
 
 	UE_LOG(LogTemp, Verbose, TEXT("[SSR] → Rewind to frame #%d (t=%.3f), %d player entries"),
 		HistoricalFrame->FrameNumber, HistoricalFrame->Timestamp, HistoricalFrame->PlayerEntries.Num());
 
+	// 射线终点：瞄准点向后延长 25%——防止目标"擦着瞄准点边缘"漏判（略偏后也能打到）
 	const FVector TraceEnd = TraceStart + (HitTarget - TraceStart) * 1.25f;
+	// ── 核心判定：把"射线 + 历史帧 + 射击者"交给纯函数，找最近命中 ──
 	Result = MathTraceSingleRay(TraceStart, TraceEnd, *HistoricalFrame, Shooter);
 
-	// Debug 可视化
+	// Debug 可视化（ssr.DrawDebug 控制）：命中画绿、未命中画红；命中点画球
 	if (CVarSSRDrawDebug.GetValueOnGameThread() > 0)
 	{
 		const FColor RayColor = Result.bHit ? FColor::Green : FColor::Red;
@@ -264,7 +289,7 @@ FSSR_TraceResult USSR_RewindManager::ProcessHitScanShot(
 			DrawDebugSphere(World, Result.ImpactPoint, 12.f, 12, FColor::Green, false, 2.f);
 	}
 
-	return Result;
+	return Result;   // 交给调用方：命中 → ApplySSRDamage 结算；未命中 → 兜底当前帧
 }
 
 // ════════════════════════════════════════════════════════════════
@@ -279,6 +304,8 @@ TArray<FSSR_TraceResult> USSR_RewindManager::ProcessShotgunPellets(
 	float ClientShotServerTime)
 {
 	TArray<FSSR_TraceResult> Results;
+
+	// ── 防御检查（和单发同款）──
 	if (!Shooter || !Shotgun || !GameState.IsValid()) return Results;
 	if (!CVarSSREnabled.GetValueOnGameThread()) return Results;
 
@@ -288,23 +315,27 @@ TArray<FSSR_TraceResult> USSR_RewindManager::ProcessShotgunPellets(
 	USSR_FrameHistory* FrameHistory = GameState->GetSSRFrameHistory();
 	if (!FrameHistory) return Results;
 
+	// ── 时间对齐（和单发同款）：找"开枪那一刻"的帧 ──
+	// 关键：所有弹丸用【同一帧】判定——一枪十几颗弹丸共享同一个回退时刻
 	const FSSR_FrameSnapshot* HistoricalFrame = FindRewindFrame(World, FrameHistory, ClientShotServerTime, TEXT("Shotgun"));
 	if (!HistoricalFrame) return Results;
 
 	UE_LOG(LogTemp, Verbose, TEXT("[SSR] Shotgun | frame #%d | %d pellets | %d history entries"),
 		HistoricalFrame->FrameNumber, HitTargets.Num(), HistoricalFrame->PlayerEntries.Num());
 
+	// ── 每颗弹丸独立判定：各自打一根射线（复用 MathTraceSingleRay！）──
+	// 每颗弹丸有自己的散射命中点(HitTarget)，各自算射线终点、各自找最近命中
 	int32 HitCount = 0;
 	for (const FVector& HitTarget : HitTargets)
 	{
-		const FVector TraceEnd = TraceStart + (HitTarget - TraceStart) * 1.25f;
+		const FVector TraceEnd = TraceStart + (HitTarget - TraceStart) * 1.25f;   // 每颗弹丸独立延长 25%
 		FSSR_TraceResult PelletResult = MathTraceSingleRay(TraceStart, TraceEnd, *HistoricalFrame, Shooter);
-		if (PelletResult.bHit) HitCount++;
-		Results.Add(PelletResult);
+		if (PelletResult.bHit) HitCount++;   // 统计命中了几颗
+		Results.Add(PelletResult);           // 每颗弹丸的结果单独存（调用方聚合成伤害）
 	}
 
 	UE_LOG(LogTemp, Log, TEXT("[SSR] Shotgun result | %d/%d pellets hit"), HitCount, HitTargets.Num());
-	return Results;
+	return Results;   // 调用方（ServerShotgunFire）遍历 Results，按目标累加伤害后一次性 ApplyDamage
 }
 
 // ════════════════════════════════════════════════════════════════

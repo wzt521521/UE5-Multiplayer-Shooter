@@ -600,7 +600,7 @@ void UCombatComponent::ServerFire_Implementation(const FVector_NetQuantize& Trac
 	ABlasterGameState* GS = GetWorld()->GetGameState<ABlasterGameState>(); // 从 GameState 拿 SSR 管理器（帧历史/回退的持有者）
 	// 进入 SSR 的四个条件（缺一不可）：
 	// ① HSWeapon：武器是 hitscan 家族（Cast 失败 = 投射物 → 跳过 SSR，走旧路径）
-	// ② GS：GameState 存在（服务器才有权威 GameState）
+	// ② GS：GameState 存在
 	// ③ GetSSRRewindManager()：SSR 管理器已初始化（初始化失败/未启用 → 走旧路径）
 	// ④ !ClientMuzzle.IsZero()：客户端上报了枪口位置（没上报 → 无法对齐射线起点 → 不走 SSR）
 	if (HSWeapon && GS && GS->GetSSRRewindManager() && !ClientMuzzle.IsZero())
@@ -744,25 +744,35 @@ bool UCombatComponent::ValidateServerFire(float FireDelay, float ClientShotTime,
 		return false;
 	}
 
-	// 5) ClientShotTime 窗口：拒绝未来时间 / 超出 SSR 回退窗口的过去时间
-	//    未来时间=伪造（可能用回退打"未来位置"）；过旧时间=伪造（SSR 回退已被 clamp 到 0.25s，无收益）
-	//    未完成时间同步前跳过（避免热身期/刚进场误杀）
+	// ── 5) ClientShotTime 时间窗校验（硬边界）：拒未来 / 拒超期 ──
+	// 前提：必须先完成时钟同步（HasSyncedServerTime）才启用本校验——
+	// 否则 ClientShotTime 尚未校准（热身期/刚进场），直接校验会误杀合法射击。
 	ABlasterPlayerController* PC = Cast<ABlasterPlayerController>(Character->GetController());
 	if (PC && PC->HasSyncedServerTime())
 	{
+		// MaxPast = 0.25s（回退上限）+ 0.05s（附加容差）= "允许的最旧时刻"
+		// 依据：超过回退窗口的时间戳无收益（反正会被 SSR Clamp 到 0.25），
+		// 传更早的时间戳 = 纯伪造 → 直接拒（这就是"硬边界"，区别于回退时的软 Clamp）
 		const float MaxPast = CVarSSRMaxPingCompensation.GetValueOnGameThread()
 			+ CVarBlasterFireTimePastExtra.GetValueOnGameThread();
+
+		// 拒绝"未来时间"：ClientShotTime > 服务器现在 + 容差
+		// 客户端不可能在"未来"开枪（FutureTolerance 兜住时钟同步误差）
+		// 报未来 = 伪造（想用回退打"未来位置"的敌人）
 		if (ClientShotTime > ServerNow + CVarBlasterFireTimeFutureTolerance.GetValueOnGameThread())
 		{
 			UE_LOG(LogTemp, Warning, TEXT("[FireValidation] %s future shot time %.3f"),
 				*GetNameSafe(Character), ClientShotTime);
-			return false;
+			return false;   // 拒这枪
 		}
+
+		// 拒绝"超期时间"：ClientShotTime < 服务器现在 - MaxPast
+		// 超过 0.25+容差 = 正常网络不可能这么旧（伪造/时钟严重错乱）
 		if (ClientShotTime < ServerNow - MaxPast)
 		{
 			UE_LOG(LogTemp, Warning, TEXT("[FireValidation] %s stale shot time %.3f"),
 				*GetNameSafe(Character), ClientShotTime);
-			return false;
+			return false;   // 拒这枪
 		}
 	}
 
