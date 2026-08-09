@@ -104,18 +104,20 @@ void USSR_FrameHistory::Initialize(ABlasterGameState* InGameState)
 	float TickRate = 60.f; // 兜底默认值（无 NetDriver 时）
 	if (UWorld* World = GetWorld())
 	{
-		// 真读权威值：修复原"桩"（旧实现 GetNetDriver()?60:60 两个分支都恒 60），
-		// 现在按服务器实际发包频率计算环形缓冲容量，改 NetServerMaxTickRate 不会算错。
+		//按服务器实际发包频率计算环形缓冲容量，改 NetServerMaxTickRate 不会算错。
 		if (const UNetDriver* NetDriver = World->GetNetDriver())
 		{
 			TickRate = FMath::Max(20.f, (float)NetDriver->NetServerMaxTickRate);
 		}
 	}
 
+	// MaxHistorySeconds "读"录多久历史"的 CVar
 	const float MaxHistorySeconds = CVarSSRMaxHistorySeconds.GetValueOnGameThread();
-	MaxCapacity = FMath::Max(1, FMath::CeilToInt(TickRate * MaxHistorySeconds));
+	MaxCapacity = FMath::Max(1, FMath::CeilToInt(TickRate * MaxHistorySeconds));//CeilToInt向上取整
 
 	// 预分配环形缓冲区内存，避免运行时动态扩容
+	// TArray<FSSR_FrameSnapshot> RingBuffer本质是线状，
+	// 但逻辑上是环形的：HeadIndex指针循环推进，FrameCounter递增不回绕
 	RingBuffer.SetNum(MaxCapacity);
 
 	// 构建骨骼追踪列表（全局共享，只执行一次）
@@ -132,16 +134,16 @@ void USSR_FrameHistory::Initialize(ABlasterGameState* InGameState)
 
 void USSR_FrameHistory::RecordFrame()
 {
-	if (!CVarSSREnabled.GetValueOnGameThread()) return;
+	if (!CVarSSREnabled.GetValueOnGameThread()) return;//总开关
 
 	UWorld* World = GetWorld();
 	if (!World) return;
 
 	// 定位环形缓冲区当前写入槽位
-	FSSR_FrameSnapshot& CurrentSnapshot = RingBuffer[HeadIndex];
-	CurrentSnapshot.PlayerEntries.Reset();
-	CurrentSnapshot.Timestamp = World->GetTimeSeconds();
-	CurrentSnapshot.FrameNumber = CurrentFrameNumber;
+	FSSR_FrameSnapshot& CurrentSnapshot = RingBuffer[HeadIndex]; //定位槽位：拿到 HeadIndex 指向的那个帧快照（引用！）
+	CurrentSnapshot.PlayerEntries.Reset(); //清空旧玩家数据（这个槽上一轮用过，得先清）
+	CurrentSnapshot.Timestamp = World->GetTimeSeconds();// 记录当前服务器时间戳（秒）
+	CurrentSnapshot.FrameNumber = CurrentFrameNumber;// 记录当前全局帧号，调试用
 
 	// 遍历所有 PlayerController 获取有效玩家角色
 	for (auto It = World->GetPlayerControllerIterator(); It; ++It)
@@ -154,7 +156,7 @@ void USSR_FrameHistory::RecordFrame()
 		if (!BlasterChar || BlasterChar->IsElimmed()) continue;
 
 		FSSR_PlayerFrameEntry& Entry = CurrentSnapshot.PlayerEntries.AddDefaulted_GetRef();
-		CapturePlayerEntry(BlasterChar, Entry);
+		CapturePlayerEntry(BlasterChar, Entry);// 录制玩家碰撞体状态
 	}
 
 	// 推进环形缓冲区指针
@@ -219,22 +221,25 @@ void USSR_FrameHistory::CapturePlayerEntry(ABlasterCharacter* Player, FSSR_Playe
 }
 
 // ════════════════════════════════════════════════════════════════
-// 二分查找：在环形缓冲区中查找 Timestamp ≤ TargetTime 的最新快照
+// 线性查找：在环形缓冲区中查找 Timestamp ≤ TargetTime 的最新快照
 // 返回 nullptr 表示历史不足
+// （容量仅 ~30 帧，线性遍历比二分更快，且无需处理环形回绕的索引映射）
 // ════════════════════════════════════════════════════════════════
 
 const FSSR_FrameSnapshot* USSR_FrameHistory::FindSnapshot(float TargetTime) const
 {
-	const int32 Count = GetSnapshotCount();
+	const int32 Count = GetSnapshotCount();// 环形缓冲区有效条目数
 	if (Count == 0) return nullptr;
 
 	// 环形缓冲区中最早帧的索引
 	const int32 OldestIndex = (FrameCounter > MaxCapacity)
-		? HeadIndex                          // 缓冲区已满，HeadIndex 指向的下一个就是最老的
-		: 0;                                  // 缓冲区未满，索引 0 是最老的
+		? HeadIndex                          // 缓冲区已满：最老的槽就是 HeadIndex 本身（它指向下一个将被覆盖的位置）
+		: 0;                                  // 缓冲区未满：最老在索引 0（按顺序写入的）
 
-	// 环形缓冲区按时间严格递增（HeadIndex → 最新, OldestIndex → 最老）
-	// 但由于环形回绕，"物理索引 0" 不一定是最老的，需要做环形二分查找
+	// 环形缓冲时间顺序：从 OldestIndex 沿环形走到 HeadIndex-1，时间严格递增
+	// 满了之后 HeadIndex 指向【最老】槽（下一个将被覆盖），HeadIndex-1 指向【最新】槽
+	// 回绕导致"物理索引 0"不一定最老 → 最老索引由上面的 OldestIndex 决定
+	// （查找是线性扫描：容量仅 ~30 帧，见下方实现，非二分）
 
 	// 简化方案：先检查最早和最晚的边界
 	const FSSR_FrameSnapshot& OldestSnap = RingBuffer[OldestIndex];

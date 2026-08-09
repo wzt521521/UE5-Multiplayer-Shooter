@@ -886,7 +886,7 @@ void ABlasterCharacter::BombInteractReleased()
 // SSR：捕获当前碰撞体快照（胶囊体 + 关键骨骼的世界空间 Transform）
 // FrameHistory 每帧调用 → 写入环形缓冲区；RewindManager 备份时调用
 // ════════════════════════════════════════════════════════════════
-
+//[已废弃-死代码]：录制逻辑已由 FrameHistory::CapturePlayerEntry 内联实现，本函数无调用点
 void ABlasterCharacter::CaptureHitboxState(FSSR_PlayerFrameEntry& OutEntry)
 {
 	OutEntry.Character = this;
