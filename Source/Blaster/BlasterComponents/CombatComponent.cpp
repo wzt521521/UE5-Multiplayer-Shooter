@@ -56,6 +56,24 @@ TAutoConsoleVariable<float> CVarBlasterFireMaxMuzzleDist(
 	ECVF_Default
 );
 
+// 瞄准合理性：射击方向与玩家视角的最大夹角（度），防"子弹拐弯"
+// 注意：服务器旋转由客户端移动复制喂入、可被伪造，此校验是"防呆网"不是硬反作弊——
+// 拦 90~180° 的离谱开火（身侧/身后），配合 SSR 视线复核覆盖主要拐弯场景。
+TAutoConsoleVariable<float> CVarBlasterFireMaxAimAngleDeg(
+	TEXT("blaster.Fire.MaxAimAngleDeg"),
+	45.f,
+	TEXT("射击方向与视角的最大夹角（度），防子弹拐弯"),
+	ECVF_Default
+);
+
+// 视角校验模式：1=只记录不拒绝（先上线采集误杀率），0=超阈值直接拒绝
+TAutoConsoleVariable<int32> CVarBlasterFireAimAngleLogOnly(
+	TEXT("blaster.Fire.AimAngleLogOnly"),
+	1,
+	TEXT("视角校验模式\n1=只记录不拒绝  0=超阈值直接拒绝"),
+	ECVF_Default
+);
+
 // 射程校验开关（0=关 1=开）
 TAutoConsoleVariable<int32> CVarBlasterFireRangeCheckEnabled(
 	TEXT("blaster.Fire.RangeCheckEnabled"),
@@ -690,7 +708,12 @@ void UCombatComponent::ServerShotgunFire_Implementation(const TArray<FVector_Net
 				}
 			}
 
-			if (Results.Num() > 0)
+			// 仅当至少一颗弹丸命中才置锁（与 hitscan 对齐）：
+			// Results 恒有 Num()==弹丸数（含全 miss），若按原逻辑恒置锁，会吞掉
+			// MulticastShotgunFire→FireShotgun 的当前帧兜底——全弹丸被墙挡时 0 伤害。
+			const bool bAnyPelletHit = Results.ContainsByPredicate(
+				[](const FSSR_TraceResult& R) { return R.bHit; });
+			if (bAnyPelletHit)
 			{
 				ShotgunWeap->bSSRHandledShot = true; // 阻止 MulticastShotgunFire→ShotgunLocalFire→FireShotgun() 的二次伤害
 			}
@@ -726,6 +749,7 @@ bool UCombatComponent::ValidateServerFire(float FireDelay, float ClientShotTime,
 	if (EquippedWeapon->IsEmpty()) return false;
 
 	// 3) FireDelay 一致性：客户端传的射速必须等于武器配置（篡改射速加速射击 → 拒绝）
+	// 什么情况下会不等？客户端修改射速
 	if (FMath::Abs(FireDelay - EquippedWeapon->FireDelay) > 0.01f)
 	{
 		UE_LOG(LogTemp, Warning, TEXT("[FireValidation] %s FireDelay mismatch %.3f != %.3f"),
@@ -743,6 +767,10 @@ bool UCombatComponent::ValidateServerFire(float FireDelay, float ClientShotTime,
 			*GetNameSafe(Character), ServerNow - LastServerFireTime, EquippedWeapon->FireDelay);
 		return false;
 	}
+
+	//检查 3（FireDelay 一致性）：抓"你报的射速不对"     → 抓说谎
+	//检查 4（服务端冷却）：     无视你报什么，自己卡时间 → 抓事实
+
 
 	// ── 5) ClientShotTime 时间窗校验（硬边界）：拒未来 / 拒超期 ──
 	// 前提：必须先完成时钟同步（HasSyncedServerTime）才启用本校验——
@@ -788,7 +816,37 @@ bool UCombatComponent::ValidateServerFire(float FireDelay, float ClientShotTime,
 		}
 	}
 
-	// 7) 射程校验（可选）：所有目标到枪口距离 ≤ 射程
+	// 7) 瞄准合理性（防子弹拐弯，默认 log-only）：射击方向必须在玩家视角附近
+	// 作弊者可报任意不在准星里的 HitTarget（身侧/身后敌人）让子弹"拐弯"；
+	// 服务器旋转由客户端移动复制喂入、可被伪造，此校验是"防呆网"不是硬反作弊——
+	// 拦 90~180° 的离谱开火，配合 SSR 视线复核覆盖主要拐弯场景。
+	// 默认只记录不拒绝（AimAngleLogOnly=1），跑局确认无误杀后再切硬拒绝。
+	// 仅 SSR 路径（ClientMuzzle 非零）生效：投射物不进 SSR、由服务器持有碰撞，天然跳过。
+	if (!ClientMuzzle.IsZero() && PC && PC->HasSyncedServerTime())
+	{
+		const FVector ViewForward = Character->GetControlRotation().Vector();
+		const float MaxAimAngle = FMath::DegreesToRadians(CVarBlasterFireMaxAimAngleDeg.GetValueOnGameThread());
+		for (const FVector_NetQuantize& T : Targets)
+		{
+			const FVector Dir = T - ClientMuzzle;
+			if (Dir.IsNearlyZero()) continue;
+			const float Angle = FMath::Acos(FMath::Clamp(Dir.GetSafeNormal() | ViewForward, -1.f, 1.f));
+			if (Angle > MaxAimAngle)
+			{
+				const bool bReject = CVarBlasterFireAimAngleLogOnly.GetValueOnGameThread() <= 0;
+				UE_LOG(LogTemp, Warning, TEXT("[FireValidation] %s aim off-view %.1f° (max %.0f°) %s"),
+					*GetNameSafe(Character), FMath::RadiansToDegrees(Angle),
+					CVarBlasterFireMaxAimAngleDeg.GetValueOnGameThread(),
+					bReject ? TEXT("REJECTED") : TEXT("LOG-ONLY"));
+				if (bReject)
+				{
+					return false;
+				}
+			}
+		}
+	}
+
+	// 8) 射程校验（可选）：所有目标到枪口距离 ≤ 射程
 	if (CVarBlasterFireRangeCheckEnabled.GetValueOnGameThread() > 0 && !ClientMuzzle.IsZero())
 	{
 		const float MaxRange = CVarBlasterFireMaxRange.GetValueOnGameThread();

@@ -20,6 +20,8 @@ extern TAutoConsoleVariable<float> CVarSSRMaxHistorySeconds;
 extern TAutoConsoleVariable<float> CVarSSRMaxPingCompensation;
 extern TAutoConsoleVariable<int32> CVarSSRValidateWithCurrent; // [已废弃-死代码] 见 .cpp 同注释，从未被读取
 extern TAutoConsoleVariable<int32> CVarSSRDrawDebug;
+extern TAutoConsoleVariable<int32> CVarSSROcclusionEnabled;
+extern TAutoConsoleVariable<int32> CVarSSROcclusionServerMuzzle;
 
 UCLASS()
 class BLASTER_API USSR_FrameHistory : public UObject

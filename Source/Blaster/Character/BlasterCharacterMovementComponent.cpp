@@ -77,7 +77,7 @@ bool UBlasterCharacterMovementComponent::ServerCheckClientError(
 		ClientTimeStamp, DeltaTime, Accel, ClientWorldLocation, RelativeClientLocation,
 		ClientMovementBase, ClientBaseBoneName, ClientMovementMode);
 
-	if (!CVarBlasterSpeedCheckEnabled.GetValueOnGameThread()) return bBaseError;
+	if (!CVarBlasterSpeedCheckEnabled.GetValueOnGameThread()) return bBaseError; // 是否开启总开关
 
 	// 2) 只在行走/导航行走时做速度判定——下落跳过，否则误杀跳跃
 	//    （JumpPickup 把 JumpZVelocity 提到 4000，下落真实速度可 >> MaxWalkSpeed）

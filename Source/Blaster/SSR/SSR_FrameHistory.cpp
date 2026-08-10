@@ -54,6 +54,22 @@ TAutoConsoleVariable<int32> CVarSSRDrawDebug(
 	ECVF_Default
 );
 
+// 视线复核（防隔墙报点）：命中点被墙挡住时拒绝该命中
+TAutoConsoleVariable<int32> CVarSSROcclusionEnabled(
+	TEXT("ssr.OcclusionEnabled"),
+	1,
+	TEXT("SSR 视线复核（防隔墙报点）\n0=关闭  1=启用"),
+	ECVF_Default
+);
+
+// 双原点遮挡：叠加"服务器武器枪口"做第二路遮挡判定（堵客户端伪造枪口到墙另一侧）
+TAutoConsoleVariable<int32> CVarSSROcclusionServerMuzzle(
+	TEXT("ssr.OcclusionServerMuzzle"),
+	1,
+	TEXT("SSR 视线复核第二路：服务器枪口\n0=只用客户端枪口  1=客户端+服务器双路"),
+	ECVF_Default
+);
+
 // ════════════════════════════════════════════════════════════════
 // 静态骨骼列表：UE5 Mannequin 标准碰撞相关骨骼
 // 只追踪对命中判定有意义的骨骼，不追踪 IK 骨骼和末端效应器

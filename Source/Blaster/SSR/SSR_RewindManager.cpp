@@ -13,6 +13,7 @@
 #include "Components/SkeletalMeshComponent.h"
 #include "Kismet/GameplayStatics.h"
 #include "Engine/World.h"
+#include "Engine/SkeletalMeshSocket.h" // 服务器枪口 MuzzleFlash 插槽（视线复核第二路）
 #include "DrawDebugHelpers.h"
 
 // ════════════════════════════════════════════════════════════════
@@ -244,6 +245,52 @@ static const FSSR_FrameSnapshot* FindRewindFrame(
 }
 
 // ════════════════════════════════════════════════════════════════
+// 视线复核（防隔墙报点）
+// ════════════════════════════════════════════════════════════════
+
+// 枪口→命中点之间是否有非角色阻塞体（墙/门/道具）挡住。
+// 角色（目标/队友/射手自己）由 MathTraceSingleRay 的数学射线负责判定，这里只关心"墙"：
+// 用默认碰撞参数 + 在结果里跳过所有 ABlasterCharacter，等价于"只看世界几何"。
+// 起点沿射线前推 5cm，避免枪口贴墙/进墙时端点误判。
+static bool IsImpactOccludedByWorld(UWorld* World, const FVector& Muzzle,
+	const FSSR_TraceResult& Result)
+{
+	if (!World || !Result.bHit) return false;
+
+	const FVector Dir = (Result.ImpactPoint - Muzzle).GetSafeNormal();
+	const FVector Start = Muzzle + Dir * 5.f;
+
+	TArray<FHitResult> Hits;
+	World->LineTraceMultiByChannel(Hits, Start, Result.ImpactPoint, ECC_Visibility);
+	for (const FHitResult& H : Hits)
+	{
+		AActor* A = H.GetActor();
+		if (!A) continue;
+		if (Cast<ABlasterCharacter>(A)) continue;   // 角色跳过（数学射线已处理）
+		return true;                                // 第一个非角色阻塞体 → 被墙遮挡
+	}
+	return false;
+}
+
+// 双原点遮挡：客户端枪口 + 服务器武器枪口各打一路，任一被非角色阻塞体挡住即拒绝。
+// 堵"作弊者把 ClientMuzzle 伪造到墙另一侧"——服务器武器枪口是权威的，躲不掉。
+// 服务器与客户端枪口只差几厘米（服务端骨骼每帧刷新），误杀增量极小。
+static bool IsShotOccluded(UWorld* World, const FVector& ClientMuzzle,
+	AWeapon* Weapon, const FSSR_TraceResult& Result)
+{
+	if (IsImpactOccludedByWorld(World, ClientMuzzle, Result)) return true;
+	if (Weapon)
+	{
+		if (const USkeletalMeshSocket* ServerMuzzle = Weapon->GetWeaponMesh()->GetSocketByName("MuzzleFlash"))
+		{
+			const FVector ServerMuzzleLoc = ServerMuzzle->GetSocketTransform(Weapon->GetWeaponMesh()).GetLocation();
+			if (IsImpactOccludedByWorld(World, ServerMuzzleLoc, Result)) return true;
+		}
+	}
+	return false;
+}
+
+// ════════════════════════════════════════════════════════════════
 // 单发 HitScan 的 SSR 处理
 // ════════════════════════════════════════════════════════════════
 
@@ -279,6 +326,19 @@ FSSR_TraceResult USSR_RewindManager::ProcessHitScanShot(
 	const FVector TraceEnd = TraceStart + (HitTarget - TraceStart) * 1.25f;
 	// ── 核心判定：把"射线 + 历史帧 + 射击者"交给纯函数，找最近命中 ──
 	Result = MathTraceSingleRay(TraceStart, TraceEnd, *HistoricalFrame, Shooter);
+
+	// ── 视线复核（防隔墙报点）：命中点被墙挡住 → 拒绝，落回当前帧兜底路径 ──
+	// 原 SSR 只做纯数学相交不查墙，作弊者报墙后 HitTarget 可穿墙命中；
+	// 这里从客户端枪口 + 服务器枪口双路查墙，任一被挡即拒绝（双原点防枪口伪造）。
+	if (Result.bHit && CVarSSROcclusionEnabled.GetValueOnGameThread() > 0
+		&& IsShotOccluded(World, TraceStart, Weapon, Result))
+	{
+		UE_LOG(LogTemp, Warning, TEXT("[SSR] ✗ OCCLUDED | Shooter=%s → %s blocked by wall"),
+			*GetNameSafe(Shooter), *GetNameSafe(Result.HitActor.Get()));
+		Result.bHit = false;
+		Result.HitActor = nullptr;
+		Result.BoneName = NAME_None;
+	}
 
 	// Debug 可视化（ssr.DrawDebug 控制）：命中画绿、未命中画红；命中点画球
 	if (CVarSSRDrawDebug.GetValueOnGameThread() > 0)
@@ -330,6 +390,18 @@ TArray<FSSR_TraceResult> USSR_RewindManager::ProcessShotgunPellets(
 	{
 		const FVector TraceEnd = TraceStart + (HitTarget - TraceStart) * 1.25f;   // 每颗弹丸独立延长 25%
 		FSSR_TraceResult PelletResult = MathTraceSingleRay(TraceStart, TraceEnd, *HistoricalFrame, Shooter);
+
+		// 视线复核：该弹丸命中点被墙挡住 → 取消这颗弹丸的命中（防穿墙结算）
+		if (PelletResult.bHit && CVarSSROcclusionEnabled.GetValueOnGameThread() > 0
+			&& IsShotOccluded(World, TraceStart, Shotgun, PelletResult))
+		{
+			UE_LOG(LogTemp, Verbose, TEXT("[SSR] ✗ Pellet occluded | %s"),
+				*GetNameSafe(PelletResult.HitActor.Get()));
+			PelletResult.bHit = false;
+			PelletResult.HitActor = nullptr;
+			PelletResult.BoneName = NAME_None;
+		}
+
 		if (PelletResult.bHit) HitCount++;   // 统计命中了几颗
 		Results.Add(PelletResult);           // 每颗弹丸的结果单独存（调用方聚合成伤害）
 	}
