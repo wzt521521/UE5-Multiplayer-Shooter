@@ -42,6 +42,6 @@ private:
 	IMatchStatsStore* Store;
 	FString           ConnectionSpec;
 	TQueue<FMatchResultRecord, EQueueMode::Mpsc>* Queue;
-	TAtomic<bool>*    StopFlag;
+	TAtomic<bool>*    StopFlag;//一个线程安全的布尔开关
 	FEvent*           WakeEvent;
 };

@@ -70,6 +70,16 @@ TAutoConsoleVariable<int32> CVarSSROcclusionServerMuzzle(
 	ECVF_Default
 );
 
+// SSR 判定分析日志（高延迟场景验证用，上线前关闭）：0=关闭 1=开启
+// 在 ProcessHitScanShot 里每枪输出一条"回退帧 vs 当前帧"对比日志，
+// 用于量化延迟补偿有效性（rewindHit=true & currentHit=false & 位移>0 ⇒ SSR 价值成立）
+TAutoConsoleVariable<int32> CVarSSRAnalysisLog(
+	TEXT("ssr.AnalysisLog"),
+	1,
+	TEXT("SSR 判定分析日志（验证延迟补偿用，上线前关掉）\n0=关闭  1=每枪输出回退帧 vs 当前帧对比"),
+	ECVF_Default
+);
+
 // ════════════════════════════════════════════════════════════════
 // 静态骨骼列表：UE5 Mannequin 标准碰撞相关骨骼
 // 只追踪对命中判定有意义的骨骼，不追踪 IK 骨骼和末端效应器

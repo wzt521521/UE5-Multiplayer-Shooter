@@ -434,6 +434,10 @@ void ABlasterPlayerController::ServerAuthenticateSession_Implementation(const FS
 	{
 		if (FPendingSession* Pending = Mgr->FindPendingSession(InToken))
 		{
+			// 命中表 = 本连接已被分类为"重连者" → 归零中途加入候选标志。
+			// 若不归零，PostLogin 已置的 true 会残留到下次地图切换：
+			// authenticate 每图重发时 ② 分支误触发 HandleMidRoundJoin，把老玩家当中途加入重置（P3 问题 1 同类）。
+			bIsMidJoinCandidate = false;
 			if (ABombDefusalGameMode* GM = GetWorld()->GetAuthGameMode<ABombDefusalGameMode>())
 			{
 				GM->RestoreReconnectedPlayer(this, *Pending, InToken);
@@ -527,7 +531,7 @@ void ABlasterPlayerController::EnterDeathSpectator(ABlasterCharacter* Corpse)
 	ClientEnterSpectator(Corpse);
 }
 
-// P3 主流方案（致命修复）：AController::Destroyed（Controller.cpp:557-566）在 Logout 后紧接着调
+// 主流方案（致命修复）：AController::Destroyed（Controller.cpp:557-566）在 Logout 后紧接着调
 // CleanupPlayerState → 默认 OnDeactivated → Destroy() 销毁 PS。但 Logout 已把 PS 注册进待重连表，
 // 若被销毁则待重连表的 TObjectPtr 变悬垂 → 重连访问是未定义行为。
 // 修复：若该 PS 在待重连表中，保留（PendingSessions 强引用防 GC），仅清本 PC 引用；否则引擎默认销毁。
@@ -548,9 +552,13 @@ void ABlasterPlayerController::CleanupPlayerState()
 	Super::CleanupPlayerState();
 }
 
-// P3 主流方案：存活角色被断线销毁时（pawn 被连接清理销毁、仍被 Possess），捕获存活状态。
+// 存活角色被断线销毁时（pawn 被连接清理销毁、仍被 Possess），捕获存活状态。
 // 已死玩家的尸体在 DestroyCorpse 时已先 UnPossess（Controller=null），不走这里。
 // GameMode::Logout 据此决定是否递减 AliveCount（存活断开=队伍减员；已死断开=死亡时已递减）。
+
+
+//在角色的 Pawn 即将被销毁的瞬间，
+//把"断开时他还活着吗"这个信息记到 PC 的成员变量里，供后面 Logout 使用。它不做事，只"捕获现场"。
 void ABlasterPlayerController::PawnPendingDestroy(APawn* inPawn)
 {
 	if (ABlasterCharacter* Char = Cast<ABlasterCharacter>(inPawn))
@@ -560,7 +568,7 @@ void ABlasterPlayerController::PawnPendingDestroy(APawn* inPawn)
 	Super::PawnPendingDestroy(inPawn);
 }
 
-// P2 中途加入观战（服务器端）：BombDefusalGameMode::HandleMidRoundJoin 调用。
+// 中途加入观战（服务器端）：BombDefusalGameMode::HandleMidRoundJoin 调用。
 // 与死亡观战（EnterDeathSpectator）区别：无死亡镜头、无团队锁定 —— 新加入者自由飞行看比赛。
 // 服务器 PC 也进入 Spectating（P1 约束：两侧一致，否则 ServerSetSpectatorLocation → ClientGotoState 拉回）。
 // 下轮重生时 OnPossess → ChangeState(NAME_Playing) 自动退出观战（P1 验证的统一路径）。
@@ -573,7 +581,7 @@ void ABlasterPlayerController::EnterJoinSpectator()
 	ClientEnterJoinSpectator();
 }
 
-// P2 中途加入观战（客户端执行）：自由飞行 SpectatorPawn + 隐藏角色 HUD。
+// 中途加入观战（客户端执行）：自由飞行 SpectatorPawn + 隐藏角色 HUD。
 // 无死亡镜头（没死过）；SpectateTarget 保持 null → 自由飞行兜底。
 // 下轮重生时 ClientRestart → ChangeState(NAME_Playing) 退出观战 + HUD 恢复（RoundInProgress 处理器）。
 void ABlasterPlayerController::ClientEnterJoinSpectator_Implementation()

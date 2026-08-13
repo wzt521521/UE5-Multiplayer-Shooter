@@ -122,9 +122,9 @@ protected:
 	virtual AActor* ChoosePlayerStart_Implementation(AController* Player) override;
 
 	// ---- 可配置参数 ----
-	// 开局人数阈值（P1 观战测试临时设为 3：需 3 名玩家，1 人死后另 2 人继续对局可被观战）
+	// 开局人数阈值（双机测试临时改为 2：两台电脑各 1 名玩家即可开局）
 	UPROPERTY(EditDefaultsOnly, Category = "Round Settings")
-	int32 AimPeople = 3;
+	int32 AimPeople = 2;
 
 	// 先赢 N 局获胜
 	UPROPERTY(EditDefaultsOnly, Category = "Round Settings")

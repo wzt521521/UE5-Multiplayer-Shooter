@@ -11,7 +11,7 @@ class ABlasterPlayerState;
 class FSubsystemCollectionBase;
 
 /**
- * P6 断线重连 —— 会话管理引擎级门面（UEngineSubsystem）。
+ * 断线重连 —— 会话管理引擎级门面（UEngineSubsystem）。
  *
  * 设计意图（WHY）：
  * - 选 UEngineSubsystem 而非 WorldSubsystem：会话状态必须跨 ServerTravel 存活。
@@ -29,7 +29,7 @@ class FSubsystemCollectionBase;
  *   重连时 LoadLocalToken() 读取并随 ServerAuthenticateSession 出示（P0）。
  */
 
-// 断线留场状态快照（P0 定义结构，P3 Logout 时填充）
+// 断线留场状态快照
 USTRUCT()
 struct FPendingSession
 {
@@ -44,7 +44,7 @@ struct FPendingSession
 	ETeamID TeamID = ETeamID::ETI_None;
 	ELogicalTeam LogicalTeam = ELogicalTeam::ELT_None;
 	int32 Money = 0;
-	bool bInMatch = false;   // true=对局中断开（大厅断开不再注册，主流方案）
+	bool bInMatch = false;   // true=对局中断开
 };
 
 UCLASS()

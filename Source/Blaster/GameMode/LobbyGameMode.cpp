@@ -200,13 +200,12 @@ void ALobbyGameMode::PostLogin(APlayerController *NewPlayer)
         TEXT("[LobbyGameMode] PostLogin | Player=%s | MatchState=%s"),
         *PlayerName, *MatchState.ToString());
 
-    // ── P6 会话：签发 token 并下发客户端（重连凭证）──
+    // ── ：签发 token 并下发客户端（重连凭证）──
     // 每个经过大厅登录的玩家都拿到一个全局唯一 token；客户端落盘保存，
     // 断线重连时出示同一 token 让服务器在待重连表中定位留场状态（P3）。
-    // IssueToken 幂等：若 PS 已带 token（重连/切图保留）则原样返回不覆盖（见 P0 计划 2.5）。
     if (UBlasterSessionManager* SessionMgr = UBlasterSessionManager::Get())
     {
-        const FString Token = SessionMgr->IssueToken(NewPlayer);
+        const FString Token = SessionMgr->IssueToken(NewPlayer);// 服务器生成 token，写进 PS->SessionToken
         if (ABlasterPlayerController* BPC = Cast<ABlasterPlayerController>(NewPlayer))
         {
             BPC->ClientReceiveSessionToken(Token);

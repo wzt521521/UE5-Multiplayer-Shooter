@@ -22,6 +22,7 @@ extern TAutoConsoleVariable<int32> CVarSSRValidateWithCurrent; // [已废弃-死
 extern TAutoConsoleVariable<int32> CVarSSRDrawDebug;
 extern TAutoConsoleVariable<int32> CVarSSROcclusionEnabled;
 extern TAutoConsoleVariable<int32> CVarSSROcclusionServerMuzzle;
+extern TAutoConsoleVariable<int32> CVarSSRAnalysisLog;
 
 UCLASS()
 class BLASTER_API USSR_FrameHistory : public UObject

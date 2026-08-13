@@ -34,9 +34,9 @@ protected:
 	void CreateServerSession();
 	void OnServerSessionCreated(FName SessionName, bool bWasSuccessful);
 
-	// 自动开局人数阈值（P1 观战测试临时设为 3：需 3 名玩家，1 人死后另 2 人继续对局可被观战）
+	// 自动开局人数阈值（双机测试临时改为 2：两台电脑各 1 名玩家即可进入对局）
 	UPROPERTY(EditDefaultsOnly, Category = "Lobby", meta = (ClampMin = "2"))
-	int32 AimPeople = 3;
+	int32 AimPeople = 2;
 
 	// 目标游戏地图路径（ServerTravel 自动保持 Listen 模式，无需 ?listen）
 	UPROPERTY(EditDefaultsOnly, Category = "Lobby")

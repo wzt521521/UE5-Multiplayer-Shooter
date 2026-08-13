@@ -50,8 +50,10 @@ void UBlasterPersistenceSubsystem::Initialize(FSubsystemCollectionBase& Collecti
 	WakeEvent = FPlatformProcess::GetSynchEventFromPool(false);  // auto-reset 事件
 	StopFlag.Store(false);
 
-	Worker = new FPersistenceWorker(Store, DbPath, &Queue, &StopFlag, WakeEvent);
+	Worker = new FPersistenceWorker(Store, DbPath, &Queue, &StopFlag, WakeEvent);//新建一个行动手册
 	// TPri_BelowNormal：写盘线程低于游戏线程优先级，IO 不抢占玩法帧
+
+	//把worker手册传给线程
 	WorkerThread = FRunnableThread::Create(Worker, TEXT("BlasterPersistenceWorker"), 0, TPri_BelowNormal);
 	bWorkerRunning = (WorkerThread != nullptr);
 

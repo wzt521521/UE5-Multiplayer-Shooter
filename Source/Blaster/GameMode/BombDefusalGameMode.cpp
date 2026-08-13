@@ -692,14 +692,16 @@ void ABombDefusalGameMode::Logout(AController* Exiting)
 {
 	Super::Logout(Exiting);
 
-	// P3 断线留场：仅对局进行中注册（Lobby/开局前直接走原有清理）
+	//是不是"对局进行中"
 	const bool bMatchInProgress = bTeamsAssigned && MatchState != MatchState::LeavingMap;
 	if (!bMatchInProgress)
 	{
+		//HandleMidRoundLeave 是"不配/不值得重连留场的玩家离开时"的收尾处理器
 		HandleMidRoundLeave(Exiting);
 		return;
 	}
 
+	//有没有身份凭证
 	ABlasterPlayerState* PS = Exiting->GetPlayerState<ABlasterPlayerState>();
 	if (!PS || PS->GetSessionToken().IsEmpty())
 	{
@@ -707,10 +709,10 @@ void ABombDefusalGameMode::Logout(AController* Exiting)
 		return;
 	}
 
-	// P3 主流方案：注册待重连表（PS 保留 → 续吃经济/统计）。
+	// 主流方案：注册待重连表（PS 保留 → 续吃经济/统计）。
 	// ⚠ 角色已被引擎销毁（断线清理），不保留 Pawn（原"留场"方案废弃）。
 	// PS 的存活由 CleanupPlayerState 重写保留（见 ABlasterPlayerController::CleanupPlayerState）。
-	FPendingSession Pending;
+	FPendingSession Pending; //构造 FPendingSession 快照
 	Pending.PlayerState  = PS;
 	Pending.TeamID       = PS->TeamID;
 	Pending.LogicalTeam  = PS->LogicalTeam;
@@ -718,7 +720,7 @@ void ABombDefusalGameMode::Logout(AController* Exiting)
 	Pending.bInMatch     = true;
 	if (UBlasterSessionManager* Mgr = UBlasterSessionManager::Get())
 	{
-		Mgr->RegisterPendingSession(PS->GetSessionToken(), MoveTemp(Pending));
+		Mgr->RegisterPendingSession(PS->GetSessionToken(), MoveTemp(Pending));// 注册进表，key = token
 	}
 
 	// 角色被销毁 = 队伍少一人 → 存活断开则递减 AliveCount + 检查回合结束。

@@ -251,14 +251,15 @@ static const FSSR_FrameSnapshot* FindRewindFrame(
 // 枪口→命中点之间是否有非角色阻塞体（墙/门/道具）挡住。
 // 角色（目标/队友/射手自己）由 MathTraceSingleRay 的数学射线负责判定，这里只关心"墙"：
 // 用默认碰撞参数 + 在结果里跳过所有 ABlasterCharacter，等价于"只看世界几何"。
-// 起点沿射线前推 5cm，避免枪口贴墙/进墙时端点误判。
+// 起点沿射线仅推前 1cm：足够脱离枪口点本身的命中歧义，又不会像大推前那样
+// 跨过紧贴枪口的薄掩体（曾导致"掩体后射击穿伤"漏判——P2 修复）。
 static bool IsImpactOccludedByWorld(UWorld* World, const FVector& Muzzle,
 	const FSSR_TraceResult& Result)
 {
 	if (!World || !Result.bHit) return false;
 
 	const FVector Dir = (Result.ImpactPoint - Muzzle).GetSafeNormal();
-	const FVector Start = Muzzle + Dir * 5.f;
+	const FVector Start = Muzzle + Dir * 1.f;
 
 	TArray<FHitResult> Hits;
 	World->LineTraceMultiByChannel(Hits, Start, Result.ImpactPoint, ECC_Visibility);
@@ -327,6 +328,10 @@ FSSR_TraceResult USSR_RewindManager::ProcessHitScanShot(
 	// ── 核心判定：把"射线 + 历史帧 + 射击者"交给纯函数，找最近命中 ──
 	Result = MathTraceSingleRay(TraceStart, TraceEnd, *HistoricalFrame, Shooter);
 
+	// 快照"纯数学回退判定"的原始结果：遮挡复核可能随后把它清成未命中，
+	// 分析日志需要区分"数学就没中" vs "数学中了但被墙挡"（occluded 字段）
+	const bool bMathHit = Result.bHit;
+
 	// ── 视线复核（防隔墙报点）：命中点被墙挡住 → 拒绝，落回当前帧兜底路径 ──
 	// 原 SSR 只做纯数学相交不查墙，作弊者报墙后 HitTarget 可穿墙命中；
 	// 这里从客户端枪口 + 服务器枪口双路查墙，任一被挡即拒绝（双原点防枪口伪造）。
@@ -347,6 +352,62 @@ FSSR_TraceResult USSR_RewindManager::ProcessHitScanShot(
 		DrawDebugLine(World, TraceStart, TraceEnd, RayColor, false, 2.f, 0, 1.f);
 		if (Result.bHit)
 			DrawDebugSphere(World, Result.ImpactPoint, 12.f, 12, FColor::Green, false, 2.f);
+	}
+
+	// ── SSR 判定分析日志（ssr.AnalysisLog 控制，验证延迟补偿用）──
+	// 目标：一枪一行，打印"回退帧判定 vs 当前帧判定"的完整对比——
+	//   * Delay      = 回退了多少毫秒（客户端开枪时刻 ↔ 服务器处理时刻的时差 = 补偿量）
+	//   * rewindHit  = 回退帧里数学射线是否命中目标（遮挡复核前的原始结果）
+	//   * occluded   = 数学命中了但被世界几何遮挡拒绝
+	//   * currentHit = 用同一根射线在"当前时刻"打一次（近似旧路径 WeaponTraceHit 的兜底判定）
+	//   * 命中时附带目标"回退帧位置 → 当前位置"与位移量
+	// 读法：rewindHit=true 且 currentHit=false 且 位移>0 ⇒ SSR 价值成立
+	//   （回退帧结算了当前帧会 miss 的一枪，这正是"高延迟打中却没伤害"的解）；
+	//   位移≈0 ⇒ 两路一致，SSR 开/关结果相同——静止目标测不出差别，测试必须用移动目标。
+	if (CVarSSRAnalysisLog.GetValueOnGameThread() > 0)
+	{
+		// 补偿量（毫秒）：与 FindRewindFrame 同一算法，便于与 ClampedDelay 日志对照
+		const double ClampedDelayMs = FMath::Clamp(
+			(double)(World->GetTimeSeconds() - ClientShotServerTime), 0.0,
+			(double)CVarSSRMaxPingCompensation.GetValueOnGameThread()) * 1000.0;
+
+		// 命中目标在"回退帧"和"当前"的胶囊体位置，差值 = 补偿窗口内的位移量
+		FString TargetDesc = TEXT("none");
+		if (Result.bHit && Result.HitActor.IsValid())
+		{
+			ABlasterCharacter* HitChar = Cast<ABlasterCharacter>(Result.HitActor.Get());
+			const FVector NowPos = HitChar ? HitChar->GetActorLocation() : FVector::ZeroVector;
+			FVector RewindPos = NowPos;   // 快照里没找到条目时退化为当前位（防御）
+			for (const FSSR_PlayerFrameEntry& Entry : HistoricalFrame->PlayerEntries)
+			{
+				if (Entry.Character.Get() == HitChar) { RewindPos = Entry.CapsuleLocation; break; }
+			}
+			TargetDesc = FString::Printf(TEXT("%s (%.0f,%.0f,%.0f)->(%.0f,%.0f,%.0f) disp=%.0fcm"),
+				*GetNameSafe(HitChar),
+				RewindPos.X, RewindPos.Y, RewindPos.Z,
+				NowPos.X, NowPos.Y, NowPos.Z,
+				(NowPos - RewindPos).Size() * 100.0);
+		}
+
+		// 当前帧兜底判定：同一根射线在"现在"打一次，跳过射手本人（近似 WeaponTraceHit 旧路径）
+		bool bCurrentHit = false;
+		{
+			TArray<FHitResult> NowHits;
+			World->LineTraceMultiByChannel(NowHits, TraceStart, TraceEnd, ECC_Visibility);
+			for (const FHitResult& H : NowHits)
+			{
+				ABlasterCharacter* C = Cast<ABlasterCharacter>(H.GetActor());
+				if (C && C != Shooter) { bCurrentHit = true; break; }
+			}
+		}
+
+		UE_LOG(LogTemp, Warning, TEXT("[SSR] 分析 | Shooter=%s | Delay=%.0fms | Rewind#%d t=%.3f | rewindHit=%s | occluded=%s | currentHit=%s | target=%s"),
+			*GetNameSafe(Shooter), ClampedDelayMs,
+			HistoricalFrame->FrameNumber, HistoricalFrame->Timestamp,
+			Result.bHit ? TEXT("true") : TEXT("false"),
+			(bMathHit && !Result.bHit) ? TEXT("true") : TEXT("false"),
+			bCurrentHit ? TEXT("true") : TEXT("false"),
+			*TargetDesc);
 	}
 
 	return Result;   // 交给调用方：命中 → ApplySSRDamage 结算；未命中 → 兜底当前帧

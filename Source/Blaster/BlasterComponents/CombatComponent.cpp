@@ -48,11 +48,13 @@ TAutoConsoleVariable<float> CVarBlasterFireTimePastExtra(
 	ECVF_Default
 );
 
-// 枪口到角色最大距离（防隔墙开枪；仅 SSR 路径 ClientMuzzle 非零时校验）
+// 枪口到角色最大距离（防"伪造枪口到墙另一侧"；仅 SSR 路径 ClientMuzzle 非零时校验）
+// 真实枪口距角色中心 50-150cm，动画/位移抖动+desync 余量后 300cm 足够；
+// 原 1000cm 形同虚设——10m 足够跨过绝大多数墙，让枪口伪造几乎不受约束（P2 修复）。
 TAutoConsoleVariable<float> CVarBlasterFireMaxMuzzleDist(
 	TEXT("blaster.Fire.MaxMuzzleDist"),
-	1000.f,
-	TEXT("枪口到角色最大距离（cm），防隔墙开枪"),
+	300.f,
+	TEXT("枪口到角色最大距离（cm），防伪造枪口；真实约 50-150，抖动余量到 300"),
 	ECVF_Default
 );
 
@@ -483,13 +485,10 @@ void UCombatComponent::TraceUnderCrosshairs(FHitResult& TraceHitResult)
 			// DrawDebugSphere(GetWorld(), TraceHitResult.ImpactPoint, 16.f, 12, FColor::Red, false, 2.f);
 		}
 
-		if(TraceHitResult.GetActor() && TraceHitResult.GetActor()->Implements<UInteractWithCrosshairsInterface>())
-		{
-			HUDPackage.CrosshairsColor = FLinearColor::Red;
-		}
-		else{
-			HUDPackage.CrosshairsColor = FLinearColor::White;
-		}
+		// 策略1：取消准星变红。原判定只看"射线撞到角色"，隔墙也会命中角色胶囊体，
+		// 泄漏"墙后有人"的信息（玩家本不该知道）。敌我分辨靠头顶名字显示，与准星颜色无关。
+		// 恒白即可；HitTarget 的计算在上一段，不受影响。
+		HUDPackage.CrosshairsColor = FLinearColor::White;
 	}
 }
 
