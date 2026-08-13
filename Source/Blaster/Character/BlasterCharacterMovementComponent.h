@@ -33,6 +33,12 @@ extern TAutoConsoleVariable<int32> CVarBlasterSpeedCheckMinConsecutive;
 extern TAutoConsoleVariable<float> CVarBlasterSpeedCheckBuffGraceSeconds;
 extern TAutoConsoleVariable<float> CVarBlasterSpeedCheckMaxGap;
 
+// ── 客户端插值平滑（Phase 1 静态降缓冲）──
+// 降低远端角色（simulated proxy）渲染位置的平滑收敛滞后 τ，
+// 与 SSR 构成"补上行 + 补下行"的双向延迟补偿。
+extern TAutoConsoleVariable<float> CVarBlasterNetSmoothLocationTime;
+extern TAutoConsoleVariable<float> CVarBlasterNetSmoothRotationTime;
+
 UCLASS()
 class BLASTER_API UBlasterCharacterMovementComponent : public UCharacterMovementComponent
 {

@@ -67,12 +67,54 @@ void UBombInteractionComponent::TickComponent(float DeltaTime, ELevelTick TickTy
 			PushInteractUI();
 		}
 	}
-	// 本地玩家：非交互时检测附近目标 → 推送提示文字
+	// 本地玩家：非交互时检测附近目标 → 驱动世界空间拾取提示 → 推送安包/拆包 HUD 文字
 	else if (OwnerCharacter && OwnerCharacter->IsLocallyControlled())
 	{
 		DetectNearbyTarget();
+		UpdatePickupWidget();
 		PushInteractUI();
 	}
+}
+
+// ========================================================================
+// 驱动掉落炸弹的世界空间 PickupWidget 显隐（武器同款拾取提示）
+// ========================================================================
+// 只在本机 Tick 中调用：命中可拾取的掉落炸弹 → 显示；目标变化/不再可拾取 → 隐藏。
+// Widget 可见性是本机状态，不复制；服务器校验仍由 Server_PickupBomb 保证权威。
+void UBombInteractionComponent::UpdatePickupWidget()
+{
+	ABombActor* Bomb = Cast<ABombActor>(InteractionTarget);
+	const bool bShow = Bomb && Bomb->GetBombState() == EBombState::EBS_Carried && Bomb->GetOwner() == nullptr;
+
+	// 隐藏上一帧的目标：目标换了，或同一目标不再满足可拾取条件（已被拾取/被安放）
+	if (LastPickupTarget && (LastPickupTarget != Bomb || !bShow))
+	{
+		LastPickupTarget->ShowPickupWidget(false);
+	}
+
+	// 命中可拾取的掉落炸弹 → 显示世界空间拾取提示
+	if (bShow && Bomb)
+	{
+		Bomb->ShowPickupWidget(true);
+	}
+
+	LastPickupTarget = bShow ? Bomb : nullptr;
+}
+
+// 返回当前可拾取的掉落炸弹；无命中返回 nullptr（E 键拾取分支使用）
+ABombActor* UBombInteractionComponent::GetPickupBomb() const
+{
+	ABombActor* Bomb = Cast<ABombActor>(InteractionTarget);
+	return (Bomb && Bomb->GetBombState() == EBombState::EBS_Carried && Bomb->GetOwner() == nullptr) ? Bomb : nullptr;
+}
+
+// E 键拾取入口：由 BlasterCharacter::EquipButtonPressed 调用。
+// Server RPC 在权威端直接执行，远程端转发服务器；服务器校验见 Server_PickupBomb_Implementation
+void UBombInteractionComponent::PickupDroppedBomb()
+{
+	ABombActor* Bomb = GetPickupBomb();
+	if (!Bomb) return;
+	Server_PickupBomb(Bomb);
 }
 
 // ========================================================================
@@ -92,7 +134,7 @@ void UBombInteractionComponent::PushInteractUI()
 	auto GetSiteName = [](AActor* Target) -> FString
 	{
 		if (!Target) return TEXT("");
-		// InteractionTarget 可能是 BombSite（安包）或 BombActor（拆包/拾取）
+		// InteractionTarget 可能是 BombSite（安包）或 BombActor（拆包目标=已安放炸弹 / 拾取目标=掉落炸弹）
 		if (ABombSite* Site = Cast<ABombSite>(Target))
 			return Site->SiteName;
 		if (ABombActor* Bomb = Cast<ABombActor>(Target))
@@ -116,13 +158,9 @@ void UBombInteractionComponent::PushInteractUI()
 	}
 	else if (InteractionTarget)
 	{
-		ABombActor* Bomb = Cast<ABombActor>(InteractionTarget);
-		if (Bomb && Bomb->GetBombState() == EBombState::EBS_Carried && Bomb->GetOwner() == nullptr)
-		{
-			bShow = true;
-			Prompt = TEXT("[Q] 拾取炸弹");
-		}
-		else if (CurrentInteraction == EBombInteractionType::EBIT_Planting)
+		// 掉落炸弹拾取提示已移交给世界空间 PickupWidget（UpdatePickupWidget），
+		// HUD 文字只保留安包/拆包，避免双提示
+		if (CurrentInteraction == EBombInteractionType::EBIT_Planting)
 		{
 			bShow = true;
 			Prompt = FString::Printf(TEXT("[Q] 安放炸弹%s"), *SiteSuffix);
@@ -151,16 +189,33 @@ void UBombInteractionComponent::DetectNearbyTarget()
 
 	if (PS->TeamID == ETeamID::ETI_Attacker)
 	{
+		// 未携带炸弹：只关心可拾取的掉落炸弹（拾取走 E 键 + 世界空间 PickupWidget）。
+		// 不在该分支检测安包点位——Q 键对无包者无效，避免显示"[Q] 安放"空提示。
 		if (!IsCarryingBomb())
 		{
 			ABombActor* DroppedBomb = FindNearestDroppedBomb();
-			if (DroppedBomb) { InteractionTarget = DroppedBomb; return; }
+			if (DroppedBomb)
+			{
+				InteractionTarget = DroppedBomb;
+				CurrentInteraction = EBombInteractionType::EBIT_None;
+				return;
+			}
+			InteractionTarget = nullptr;
+			CurrentInteraction = EBombInteractionType::EBIT_None;
+			return;
 		}
+
+		// 已携带炸弹：只关心安包点位；没找到就清空目标，避免上一帧的旧目标残留提示
 		ABombSite* Site = FindNearestBombSite();
 		if (Site && !Site->bIsBombPlantedHere)
 		{
 			InteractionTarget = Site;
 			CurrentInteraction = EBombInteractionType::EBIT_Planting;
+		}
+		else
+		{
+			InteractionTarget = nullptr;
+			CurrentInteraction = EBombInteractionType::EBIT_None;
 		}
 	}
 	else if (PS->TeamID == ETeamID::ETI_Defender)
@@ -253,12 +308,9 @@ void UBombInteractionComponent::OnInteractKeyPressed()
 
 	if (PS->TeamID == ETeamID::ETI_Attacker)
 	{
-		if (!IsCarryingBomb())
-		{
-			ABombActor* DroppedBomb = FindNearestDroppedBomb();
-			if (DroppedBomb) { Server_PickupBomb(DroppedBomb); return; }
-			return;
-		}
+		// Q 键只负责安包：未携带炸弹时不触发任何交互（拾取已移到 E 键）
+		if (!IsCarryingBomb()) return;
+
 		ABombSite* Site = FindNearestBombSite();
 		if (Site && !Site->bIsBombPlantedHere)
 		{
@@ -356,6 +408,8 @@ void UBombInteractionComponent::Server_PickupBomb_Implementation(ABombActor* Bom
 	if (!OwnerCharacter || !Bomb) return;
 	ABlasterPlayerState* PS = OwnerCharacter->GetPlayerState<ABlasterPlayerState>();
 	if (!PS || PS->TeamID != ETeamID::ETI_Attacker) return;
+	// 加固：服务器侧确认调用者当前未携带炸弹，堵住恶意客户端已带包仍抢包的缺口
+	if (IsCarryingBomb()) return;
 	if (Bomb->GetBombState() != EBombState::EBS_Carried || Bomb->GetOwner() != nullptr) return;
 	float Dist = FVector::Dist(OwnerCharacter->GetActorLocation(), Bomb->GetActorLocation());
 	if (Dist > MaxInteractDistance) return;

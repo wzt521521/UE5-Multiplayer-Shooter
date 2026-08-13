@@ -46,9 +46,34 @@ TAutoConsoleVariable<float> CVarBlasterSpeedCheckMaxGap(
 	ECVF_Default
 );
 
+// ────────────────────────────────────────────────────────────
+// 客户端插值平滑（Phase 1 静态降缓冲）：远端角色渲染位置平滑时间 τ
+// 引擎默认 LocationTime=0.1s / RotationTime=0.05s，是"下行滞后"的主导项。
+// 砍到 0.05/0.03 直接降低被击中者看到的位置滞后；τ 是时间常数（非加法延迟），
+// 砍半只砍"平滑收敛滞后"这一项。不碰 NetworkMaxSmoothUpdateDistance（超距 snap 阈值，调低只增抖）。
+// 运行期动态调整由 Phase 2 自适应负责（见 BlasterPlayerController）。
+// ────────────────────────────────────────────────────────────
+TAutoConsoleVariable<float> CVarBlasterNetSmoothLocationTime(
+	TEXT("blaster.NetSmooth.LocationTime"),
+	0.05f,
+	TEXT("远端角色位置平滑时间 τ（秒），引擎默认 0.1。仅客户端 simulated proxy 生效"),
+	ECVF_Default
+);
+
+TAutoConsoleVariable<float> CVarBlasterNetSmoothRotationTime(
+	TEXT("blaster.NetSmooth.RotationTime"),
+	0.03f,
+	TEXT("远端角色旋转平滑时间（秒），引擎默认 0.05。仅客户端 simulated proxy 生效"),
+	ECVF_Default
+);
+
 UBlasterCharacterMovementComponent::UBlasterCharacterMovementComponent()
 {
-	// 无额外初始化：全部校验状态是惰性成员，首次 ServerMove 才建立追踪样本
+	// Phase 1 静态降缓冲：构造时从 CVar 读 τ 默认值写入基类 public 成员。
+	// 这两个成员只对远端角色（simulated proxy）的客户端平滑有意义，
+	// 本地角色（autonomous proxy）与服务器实例不读它们，无副作用。
+	NetworkSimulatedSmoothLocationTime = CVarBlasterNetSmoothLocationTime.GetValueOnGameThread();
+	NetworkSimulatedSmoothRotationTime = CVarBlasterNetSmoothRotationTime.GetValueOnGameThread();
 }
 
 // ════════════════════════════════════════════════════════════════

@@ -127,7 +127,7 @@ private:
 	UPROPERTY(VisibleAnywhere, BlueprintReadOnly, meta = (AllowPrivateAccess = "true"))
 	class UThrowableComponent* Throwable;
 
-	// 炸弹交互：Q键安包/拆包（BombMode Phase 2），在构造函数中 CreateDefaultSubobject
+	// 炸弹交互：E 键拾取掉落炸弹 + Q 键安包/拆包，在构造函数中 CreateDefaultSubobject
 	UPROPERTY(VisibleAnywhere, BlueprintReadOnly, meta = (AllowPrivateAccess = "true"))
 	class UBombInteractionComponent* BombInteraction;
 

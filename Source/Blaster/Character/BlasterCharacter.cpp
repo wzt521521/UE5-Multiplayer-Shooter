@@ -370,6 +370,12 @@ void ABlasterCharacter::EquipButtonPressed()
 			}
 			ServerPickupAmmo();
 		}
+		else if (BombInteraction && BombInteraction->CanPickup())
+		{
+			// 炸弹拾取：E 键与武器/弹药拾取统一入口，
+			// 服务器权威校验（攻方身份/未带包/掉落状态/距离）交给组件内部 Server_PickupBomb
+			BombInteraction->PickupDroppedBomb();
+		}
 	}
 }
 

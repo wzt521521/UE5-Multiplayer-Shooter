@@ -8,7 +8,7 @@
 void AHitScanWeapon::Fire(const FVector& HitTarget)
 {
 	Super::Fire(HitTarget); // 基类公共三段：开火动画 + 抛壳(生成ACasing) + 扣弹药(SpendRound)
-1
+
 	// ── 取"是谁开的枪"：ApplyDamage 需要肇事者信息 ──
 	APawn* OwnerPawn = Cast<APawn>(GetOwner());              // 武器持有者（玩家角色）
 	if (OwnerPawn == nullptr) return;                        // 武器没有持有者（掉在地上的枪）→ 不结算不表现

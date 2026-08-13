@@ -30,6 +30,8 @@
 #include "Blaster/Persistence/PlayerIdentity.h"  // P4 持久身份：客户端本地 PlayerId
 #include "Blaster/Session/SessionManagerSubsystem.h"  // P6 会话：token 落盘/读取/待重连表查询
 #include "Kismet/GameplayStatics.h"
+#include "EngineUtils.h"              // TActorIterator（Phase 2 遍历远端角色应用 τ）
+#include "Engine/NetConnection.h"     // GetAverageLag()（Phase 2 jitter 采样源）
 
 void ABlasterPlayerController::SetupInputComponent()
 {
@@ -99,6 +101,7 @@ void ABlasterPlayerController::Tick(float DeltaTime)
 	Super::Tick(DeltaTime);
 	SetHUDTime();
 	CheckTimeSync(DeltaTime);
+	UpdateNetSmoothAdaptive(DeltaTime);
 	PollInit();
 
 	// ── 运行时 tick 率日志（仅客户端本机 PC）：每 5s 打一次实际帧率 ──
@@ -716,6 +719,123 @@ void ABlasterPlayerController::ClientReportServerTime_Implementation(float TimeO
 	TArray<float> Sorted = DeltaSamples;
 	Sorted.Sort();
 	ClientServerDelta = Sorted[Sorted.Num() / 2];  // 取中位（抗尖峰，偏移估计更稳）
+}
+
+// ════════════════════════════════════════════════════════════════
+// Phase 2 客户端插值平滑自适应：采样抖动 → 映射目标 τ → ramp 平滑 → 应用到远端角色
+// 与 SSR 构成"补上行 + 补下行"的双向延迟补偿。SSR 回退服务器到射击时刻（补射击者上行），
+// 本函数降低远端角色渲染位置的平滑滞后 τ（补下行）。
+// ════════════════════════════════════════════════════════════════
+
+TAutoConsoleVariable<int32> CVarBlasterNetSmoothAdaptiveEnabled(
+	TEXT("blaster.NetSmooth.Adaptive.Enabled"),
+	1,
+	TEXT("插值平滑自适应总开关\n0=禁用（只保留 Phase 1 静态值） 1=启用"),
+	ECVF_Default
+);
+
+TAutoConsoleVariable<float> CVarBlasterNetSmoothAdaptiveMinTau(
+	TEXT("blaster.NetSmooth.Adaptive.MinTau"),
+	0.05f,
+	TEXT("τ 下限（秒）：低抖动时的平滑时间，与 Phase 1 静态默认一致"),
+	ECVF_Default
+);
+
+TAutoConsoleVariable<float> CVarBlasterNetSmoothAdaptiveMaxTau(
+	TEXT("blaster.NetSmooth.Adaptive.MaxTau"),
+	0.1f,
+	TEXT("τ 上限（秒）：高抖动时回落到引擎默认 0.1s 兜底"),
+	ECVF_Default
+);
+
+TAutoConsoleVariable<float> CVarBlasterNetSmoothAdaptiveLowJitterMs(
+	TEXT("blaster.NetSmooth.Adaptive.LowJitterMs"),
+	30.f,
+	TEXT("抖动低于此值（ms）→ τ=MinTau（最跟手）"),
+	ECVF_Default
+);
+
+TAutoConsoleVariable<float> CVarBlasterNetSmoothAdaptiveHighJitterMs(
+	TEXT("blaster.NetSmooth.Adaptive.HighJitterMs"),
+	80.f,
+	TEXT("抖动高于此值（ms）→ τ=MaxTau（兜底），中间线性插值"),
+	ECVF_Default
+);
+
+TAutoConsoleVariable<float> CVarBlasterNetSmoothAdaptiveRampRate(
+	TEXT("blaster.NetSmooth.Adaptive.RampRate"),
+	0.01f,
+	TEXT("τ 每秒最大逼近量（FInterpConstantTo 的 InterpSpeed，0.01=10ms/s）\n防 τ 阈值跳变制造二次抖动"),
+	ECVF_Default
+);
+
+void ABlasterPlayerController::UpdateNetSmoothAdaptive(float DeltaTime)
+{
+	// 仅客户端本机执行：远端角色平滑只发生在本地渲染，服务器/其它客户端无需此逻辑
+	if (!IsLocalController()) return;
+	if (!CVarBlasterNetSmoothAdaptiveEnabled.GetValueOnGameThread()) return;
+
+	// ~1s 采样一次延迟。抖动是快变量，但"调整 τ"的决策 1s 粒度足够；
+	// 平滑值的应用本身是引擎逐帧自动做的，不需要逐帧改。
+	NetSmoothLastSampleTime += DeltaTime;
+	if (NetSmoothLastSampleTime < 1.0f) return;
+	const float SampleDt = NetSmoothLastSampleTime; // 实际采样间隔（≈1s），供 ramp 使用
+	NetSmoothLastSampleTime = 0.f;
+
+	// 采样源：NetConnection 本地可得、采样可控。GetPingInMilliseconds 是复制值，
+	// 更新频率由 PlayerState 复制决定、不可控，故不用。
+	const UNetConnection* Conn = GetNetConnection();
+	// AvgLag 是 UNetConnection 的 public 成员（单位秒），乘 1000 转毫秒与 CVar 阈值对齐
+	const float LagMs = Conn ? Conn->AvgLag * 1000.f : 0.f;
+
+	// 滚动窗口：保留最近 N=10 个样本（1s 采样 → 10s 窗口），沿用时间同步 RemoveAt(0) 惯例
+	RecentLagSamples.Add(LagMs);
+	const int32 MaxSamples = 10;
+	while (RecentLagSamples.Num() > MaxSamples)
+	{
+		RecentLagSamples.RemoveAt(0);
+	}
+
+	// jitter = 相邻样本差的绝对值平均，对单次尖峰稳健（与项目"抗尖峰"一贯思路一致）
+	float JitterMs = 0.f;
+	if (RecentLagSamples.Num() >= 2)
+	{
+		float SumDiff = 0.f;
+		for (int32 i = 1; i < RecentLagSamples.Num(); ++i)
+		{
+			SumDiff += FMath::Abs(RecentLagSamples[i] - RecentLagSamples[i - 1]);
+		}
+		JitterMs = SumDiff / (RecentLagSamples.Num() - 1);
+	}
+
+	// 映射目标 τ：低抖动 → MinTau（更跟手），高抖动 → MaxTau（兜底），中间线性
+	const float LowMs = CVarBlasterNetSmoothAdaptiveLowJitterMs.GetValueOnGameThread();
+	const float HighMs = CVarBlasterNetSmoothAdaptiveHighJitterMs.GetValueOnGameThread();
+	const float MinTau = CVarBlasterNetSmoothAdaptiveMinTau.GetValueOnGameThread();
+	const float MaxTau = CVarBlasterNetSmoothAdaptiveMaxTau.GetValueOnGameThread();
+	const float Alpha = FMath::Clamp((JitterMs - LowMs) / (HighMs - LowMs), 0.f, 1.f);
+	const float TargetTau = FMath::Lerp(MinTau, MaxTau, Alpha);
+
+	// τ 平滑（ramp）：TargetTau 直接写入会因阈值跳变让 τ 瞬跳、所有敌人逼近速度集体突变
+	// （"突然集体变卡"一下），制造新的抖。用匀速逼近让 τ 缓慢滑向目标。
+	const float RampRate = CVarBlasterNetSmoothAdaptiveRampRate.GetValueOnGameThread();
+	CurrentTau = FMath::FInterpConstantTo(CurrentTau, TargetTau, SampleDt, RampRate);
+
+	// 应用：遍历所有远端角色（simulated proxy），把平滑后的 CurrentTau 写进其 CMC。
+	// jitter 是连接级属性，所有 simulated proxy 共享同一个 τ，不做 per-actor 差异化。
+	// NetworkSimulatedSmoothLocationTime 是基类 public 成员，用基类指针直接写即可。
+	for (TActorIterator<ABlasterCharacter> It(GetWorld()); It; ++It)
+	{
+		ABlasterCharacter* Ch = *It;
+		if (!Ch || Ch->GetLocalRole() != ROLE_SimulatedProxy) continue;
+		if (UCharacterMovementComponent* CMC = Ch->GetCharacterMovement())
+		{
+			CMC->NetworkSimulatedSmoothLocationTime = CurrentTau;
+		}
+	}
+
+	UE_LOG(LogTemp, Log, TEXT("[NetSmooth] jitter=%.1fms targetTau=%.3f currentTau=%.3f | samples=%d"),
+		JitterMs, TargetTau, CurrentTau, RecentLagSamples.Num());
 }
 
 float ABlasterPlayerController::GetServerTime()

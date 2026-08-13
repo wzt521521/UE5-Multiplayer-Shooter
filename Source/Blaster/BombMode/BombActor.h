@@ -8,6 +8,7 @@
 class ABombSite;
 class UStaticMeshComponent;
 class USphereComponent;
+class UWidgetComponent;
 
 // 炸弹实体：封装生命周期状态机 + 倒计时 + 事件广播。
 // 不依赖任何 GameMode/Character 类型，只通过 Delegate 通知外部订阅者。
@@ -63,6 +64,9 @@ public:
 	// 携带者死亡时：从身上 Detach，掉落在地面
 	void DropAtLocation(const FVector& Location);
 
+	// 显示/隐藏掉落拾取提示（与 AWeapon::ShowPickupWidget 同款接口）
+	void ShowPickupWidget(bool bShowWidget);
+
 	// ── 事件订阅（GameMode BeginPlay 时绑定）──
 	FOnBombPlantedSignature OnBombPlanted;
 	FOnBombExplodedSignature OnBombExploded;
@@ -98,6 +102,10 @@ protected:
 	// 交互检测球：守方进入此范围才能拆包
 	UPROPERTY(VisibleAnywhere, BlueprintReadOnly)
 	USphereComponent* InteractSphere;
+
+	// 拾取提示 Widget：掉落可拾取时显示（武器同款 WBP_PickupWidget，蓝图里赋 WidgetClass）
+	UPROPERTY(VisibleAnywhere, BlueprintReadOnly)
+	UWidgetComponent* PickupWidget;
 
 private:
 	// ── 网络复制属性 ──

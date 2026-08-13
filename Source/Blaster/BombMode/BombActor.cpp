@@ -3,6 +3,7 @@
 #include "Blaster/Character/BlasterCharacter.h"
 #include "Components/StaticMeshComponent.h"
 #include "Components/SphereComponent.h"
+#include "Components/WidgetComponent.h"
 #include "Net/UnrealNetwork.h"
 #include "Engine/Engine.h"
 
@@ -27,12 +28,22 @@ ABombActor::ABombActor()
 	InteractSphere->SetCollisionResponseToChannel(ECC_Pawn, ECR_Overlap);
 	InteractSphere->SetSphereRadius(MaxInteractDistance);
 
+	// 拾取提示 Widget：与 AWeapon 同款机制，默认隐藏，
+	// 掉落可拾取时由 BombInteractionComponent 驱动显示（WidgetClass 在蓝图里指向 WBP_PickupWidget）
+	PickupWidget = CreateDefaultSubobject<UWidgetComponent>(TEXT("PickupWidget"));
+	PickupWidget->SetupAttachment(BombMesh);
+
 	// Tick 始终开启，在 Tick 内部用 HasAuthority() 过滤（UE 5.0 兼容）
 }
 
 void ABombActor::BeginPlay()
 {
 	Super::BeginPlay();
+
+	if (PickupWidget)
+	{
+		PickupWidget->SetVisibility(false); // 默认隐藏，仅掉落可拾取时显示
+	}
 }
 
 void ABombActor::GetLifetimeReplicatedProps(TArray<FLifetimeProperty>& OutLifetimeProps) const
@@ -203,10 +214,20 @@ void ABombActor::DropAtLocation(const FVector& Location)
 	DetachFromActor(FDetachmentTransformRules::KeepWorldTransform);
 	SetActorLocation(Location);
 	SetOwner(nullptr);
-	// 保持 Carried 状态：其他攻方仍可拾取（Phase 2 扩展）
-	// 当前最简模型：掉落后仍为 Carried，其他攻方靠近后按 Q 可在埋包点重新下包
+	// 保持 Carried 状态 + 置空 Owner：掉落后仍可被其他攻方靠近，按 E 键通过
+	// Server_PickupBomb 重新拾取（拾取提示由世界空间 WBP_PickupWidget 呈现）
 
 	UE_LOG(LogTemp, Log, TEXT("[Bomb] Dropped at %s"), *Location.ToString());
+}
+
+// 显示/隐藏掉落拾取提示：与 AWeapon::ShowPickupWidget 完全一致的接口，
+// 只控制本地客户端对 World Widget 的可见性，不涉及任何复制状态
+void ABombActor::ShowPickupWidget(bool bShowWidget)
+{
+	if (PickupWidget)
+	{
+		PickupWidget->SetVisibility(bShowWidget);
+	}
 }
 
 // ========================================================================
