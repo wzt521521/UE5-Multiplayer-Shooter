@@ -24,6 +24,21 @@
 #include "Blaster/Pickups/AmmoPickup.h"  // OverlappingAmmo 追踪 + ServerPickupAmmo RPC
 #include "Blaster/SSR/SSR_FrameHistory.h"  // GetRelevantBoneNames()
 
+// static 成员定义（连接级共享的到达间隔累积缓冲区：OnRep_ReplicatedMovement 喂入、PC 读取）
+TArray<float> ABlasterCharacter::PendingIntervals;
+
+// ── 采样间隔过滤阈值（Phase 2 数据清洗）──
+// WHY：服务器对静止的 simulated proxy 不发移动复制（实测静止→移动首包间隔 18.5s/129s），
+// 若入缓冲会把第一秒 jitter 假顶到 1204~3601ms（实测），τ 被顶到上限再回落。
+// 同时挡住"切图幻影"（Lobby 人齐瞬间给最后加入者生成的角色随 ServerTravel 立即销毁，
+// 其唯一复制包仍会到达已在旧世界的客户端，实测 07.53.32:543 一次性到达）。
+// 500ms 远大于注入 150ms/抖动 30ms 下相邻包最大合法间隔（≈75ms），不会误伤真抖动。
+TAutoConsoleVariable<float> CVarBlasterNetSmoothMaxIntervalMs(
+	TEXT("blaster.NetSmooth.Adaptive.MaxIntervalMs"),
+	500.f,
+	TEXT("采样间隔上限（ms）：超过视为移动间隙/切图幻影，只重置时间戳不入缓冲"),
+	ECVF_Default
+);
 
 ABlasterCharacter::ABlasterCharacter(const FObjectInitializer& ObjectInitializer)
 	// P3 移动校验：把引擎默认 UCharacterMovementComponent 替换为子类。
@@ -77,9 +92,49 @@ ABlasterCharacter::ABlasterCharacter(const FObjectInitializer& ObjectInitializer
 	MinNetUpdateFrequency = 33.f;
 
 
-}	
+}
 
 
+// ════════════════════════════════════════════════════════════════
+// Phase 2 采样源：客户端 simulated proxy 收到移动复制（ReplicatedMovement）时调用
+// 记录到达墙钟时间，算"本角色自己的到达间隔"喂入 static 累积缓冲区。
+// ★ 用实例成员 LastSnapshotArrivalTime（每角色独立），不能用 static 串所有角色——
+//   同批 UDP 包里多个角色的到达只差 ~0.3ms（处理时间），与跨 tick 的真实间隔交替，
+//   会产生确定性伪抖动淹没真实网络抖动（多人场景定时炸弹）。
+// ════════════════════════════════════════════════════════════════
+void ABlasterCharacter::OnRep_ReplicatedMovement()
+{
+	Super::OnRep_ReplicatedMovement();
+
+	// 只统计远端角色（simulated proxy）的到达；本地角色走预测不走此路径。
+	// 实测整场零 Role=2 触发：主人连接的自己角色 ReplicatedMovement 不会到达，此守卫是双保险。
+	if (GetLocalRole() != ROLE_SimulatedProxy) return;
+
+	const double Now = GetWorld()->GetTimeSeconds();
+	if (LastSnapshotArrivalTime >= 0.0)
+	{
+		const float Interval = (float)(Now - LastSnapshotArrivalTime);
+
+		// ── 间隔过滤：>上限 的不是网络抖动，而是"静止→开始移动"的停顿 ──
+		// 服务器对静止角色不发移动复制（实测 18.5s/129s），恢复移动的首包混入超长间隔
+		// → jitter 假值（实测 1204/1597/3601ms）→ τ 被顶到上限。
+		// 策略：丢弃该样本、但照常重置时间戳——停顿不算抖动，时钟基准照走。
+		// Interval<=0（同帧多包突发/切图加载期世界时间冻结）静默丢弃不打日志——实测会刷屏。
+		const float MaxInterval = CVarBlasterNetSmoothMaxIntervalMs.GetValueOnGameThread() / 1000.f;
+		if (Interval > 0.f && Interval <= MaxInterval)
+		{
+			// 本角色自己的间隔，不受其他角色交错污染
+			PendingIntervals.Add(Interval);
+		}
+		else if (Interval > MaxInterval)
+		{
+			// 过滤生效证据（低频，保留）：挡掉了一次移动间隙/切图幻影
+			UE_LOG(LogTemp, Log, TEXT("[NetSmooth] 丢弃超长间隔：%s | 间隔=%.3fs（上限 %.0fms，视为移动间隙/切图幻影）"),
+				*GetName(), Interval, CVarBlasterNetSmoothMaxIntervalMs.GetValueOnGameThread());
+		}
+	}
+	LastSnapshotArrivalTime = Now;
+}
 void ABlasterCharacter::BeginPlay()
 {
 	Super::BeginPlay();

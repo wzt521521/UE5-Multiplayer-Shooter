@@ -163,10 +163,9 @@ protected:
 	void CheckTimeSync(float DeltaTime);
 
 	// ── 客户端插值平滑自适应（Phase 2 补下行）──
-	// 采样 NetConnection 延迟算抖动（快变量），~1s 粒度驱动远端角色平滑时间 τ。
+	// 采样"远端角色快照到达间隔"算抖动（纯下行），~1s 粒度驱动平滑时间 τ。
+	// 间隔由 Character 的 OnRep_ReplicatedMovement 喂入 static PendingIntervals。
 	// jitter 是连接级属性，共享一个 CurrentTau 应用到所有 simulated proxy。
-	// CurrentTau 初始 0.05 与 Phase 1 静态默认一致（BlasterCharacterMovementComponent 构造）。
-	TArray<float> RecentLagSamples;          // 滚动延迟采样（保留最近 10 个，1s 采样 → 10s 窗口）
 	float NetSmoothLastSampleTime = 0.f;     // 距上次采样的累计秒数
 	float CurrentTau = 0.05f;                // 平滑后的 τ（持久状态，向 TargetTau 匀速逼近）
 	void UpdateNetSmoothAdaptive(float DeltaTime);

@@ -170,6 +170,11 @@ protected:
 	TSoftObjectPtr<UDataTable> ShopItemTableRef;
 
 private:
+	// ── 服务器性能采样（简历数据钩子，临时）──
+	// PerfSampleAccum/Count：Tick 内累计的帧时长与帧数，每 5s 打一次 [Perf] 汇总后清零
+	float PerfSampleAccum = 0.f;
+	int32 PerfSampleCount = 0;
+
 	// ---- 回合生命周期 ----
 	float CountdownTime = 0.f;
 	int32 RoundNumber = 0;

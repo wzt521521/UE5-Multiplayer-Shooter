@@ -81,8 +81,9 @@ public:
 	UPROPERTY(Replicated)
 	int32 TeamBWinStreak = 0;
 
-	// 半场状态
-	UPROPERTY(Replicated)
+	// 半场状态（ReplicatedUsing：客户端收到翻转时立即广播回合信息，
+	// 保证 RoundOverlay 的 ScoreText 在半场交换瞬间按新映射刷新——修复跨通道复制时序竞争）
+	UPROPERTY(ReplicatedUsing = OnRep_bIsSecondHalf)
 	bool bIsSecondHalf = false;
 
 	// 半场交换回合数（BeginPlay 时写入一次）
@@ -188,6 +189,8 @@ private:
 	void OnRep_TeamBWins();
 	UFUNCTION()
 	void OnRep_LastMatchWinnerLT();
+	UFUNCTION()
+	void OnRep_bIsSecondHalf();
 
 	// ── SSR 子系统（服务器专有，不复制） ──
 	UPROPERTY()

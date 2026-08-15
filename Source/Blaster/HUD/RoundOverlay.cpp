@@ -58,8 +58,21 @@ void URoundOverlay::RefreshRoundInfo(int32 RoundNumber, int32 TeamAWins, int32 T
 		RoundNumberText->SetText(
 			FText::FromString(FString::Printf(TEXT("第%d回合"), RoundNumber)));  // 第X回合
 	}
-	if (ScoreText) ScoreText->SetText(
-		FText::FromString(FString::Printf(TEXT("攻击者 %d - %d 保卫者"), TeamAWins, TeamBWins)));
+	// ── 半场交换修正（bug 修复）──
+	// 比分按 LogicalTeam 记录（TeamA/TeamB 跟随玩家跨半场不互换，EndRound→AddRoundWin 按逻辑队递增），
+	// 但 ScoreText 的标签是角色维度"攻击者/保卫者"，而角色映射随半场翻转：
+	// 上半场 攻击者=TeamA；下半场（bIsSecondHalf）攻击者=TeamB（与 GameMode::GetLogicalTeamFromRole 同款映射）。
+	// 修复前 ScoreText 无条件用 (TeamAWins, TeamBWins) 对位 (攻击者, 保卫者)，
+	// 下半场会把守方比分显示在"攻击者"名下——实测 bug。
+	if (ScoreText)
+	{
+		const ABlasterGameState* GS = GetWorld() ? GetWorld()->GetGameState<ABlasterGameState>() : nullptr;
+		const bool bSecondHalf = GS ? GS->bIsSecondHalf : false;
+		const int32 AttackerWins = bSecondHalf ? TeamBWins : TeamAWins;
+		const int32 DefenderWins = bSecondHalf ? TeamAWins : TeamBWins;
+		ScoreText->SetText(FText::FromString(
+			FString::Printf(TEXT("攻击者 %d - %d 保卫者"), AttackerWins, DefenderWins)));
+	}
 	// 同时刷新阵营标签：回合准备阶段 TeamID 已分配，确保 TeamLabel 与最新阵营同步
 	RefreshTeamLabel();
 }

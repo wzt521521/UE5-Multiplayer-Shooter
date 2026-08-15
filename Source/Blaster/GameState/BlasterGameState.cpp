@@ -124,6 +124,14 @@ void ABlasterGameState::OnRep_LastMatchWinnerLT()
 	BroadcastMatchResult();
 }
 
+// 半场翻转到达客户端 → 立即广播回合信息：
+// RoundOverlay::RefreshRoundInfo 依赖 bIsSecondHalf 做"攻击者/保卫者"标签与 TeamA/TeamB 比分的翻转映射，
+// 广播保证翻转瞬间 ScoreText 立即按新半场刷新，而不是等下一次比分/回合号复制才更新。
+void ABlasterGameState::OnRep_bIsSecondHalf()
+{
+	BroadcastRoundInfo();
+}
+
 // ── 经济辅助方法 ──
 int32 ABlasterGameState::GetLossStreakForTeam(ELogicalTeam T) const
 {

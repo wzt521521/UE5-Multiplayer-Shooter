@@ -24,6 +24,34 @@
 #include "Blaster/Session/SessionManagerSubsystem.h"  // P2：中途加入直连 Bomb 幂等补发会话 token
 #include "EngineUtils.h"  // TActorIterator
 
+// ────────────────────────────────────────────────────────────
+// 服务器下行延迟模拟 CVar（测试钩子，Phase 2 验证用）
+// 服务器黑窗敲不了命令（FWindowsConsoleOutputDevice 无输入读取），只能靠代码钩子自动注入。
+// PktLag 抬高下行延迟水平，PktLagVariance 制造到达间隔抖动——固定 PktLag 只是"平移"、
+// 不产生抖动，只有 Variance 才让下行快照"忽长忽短"。
+// 注入点在本类 BeginPlay（时序原因见 BeginPlay 内注释）。
+// ────────────────────────────────────────────────────────────
+TAutoConsoleVariable<int32> CVarBlasterNetLagSimEnabled(
+	TEXT("blaster.NetLagSim.Enabled"),
+	0,
+	TEXT("服务器下行延迟模拟总开关\n0=关 1=开"),
+	ECVF_Default
+);
+
+TAutoConsoleVariable<float> CVarBlasterNetLagSimPktLag(
+	TEXT("blaster.NetLagSim.PktLag"),
+	150.f,
+	TEXT("下行延迟水平（ms）"),
+	ECVF_Default
+);
+
+TAutoConsoleVariable<float> CVarBlasterNetLagSimVariance(
+	TEXT("blaster.NetLagSim.Variance"),
+	30.f,
+	TEXT("下行延迟抖动方差（ms）—— 这才是 τ 该响应的抖动"),
+	ECVF_Default
+);
+
 ABombDefusalGameMode::ABombDefusalGameMode()
 {
 	// 延迟开局：手动控制角色生成和状态机启动时机
@@ -78,6 +106,21 @@ void ABombDefusalGameMode::BeginPlay()
 {
 	Super::BeginPlay();
 
+	// ── 服务器下行延迟模拟注入（测试钩子，Phase 2 验证用）──
+	// WHY 放在 Bomb GameMode 而不是 Lobby：-ExecCmds 在引擎首帧 Tick 的 DeferredCommands 里执行，
+	// 实测晚于 LobbyGameMode::BeginPlay（02.54.30:706 > :621），Lobby 注入时 CVar 还是默认 0 不生效。
+	// Bomb 是无缝切图后（玩家齐）才加载的地图，BeginPlay 必然晚于 ExecCmds，CVar 已被设好。
+	// HOW：GEngine->Exec 把 "Net PktLag=..." 路由到 World 的 NetDriver（UNetDriver::Exec 处理，
+	// 成功时服务器日志会打 "PktLag set to %d"），PktLag 抬高下行延迟、PktLagVariance 制造到达间隔抖动。
+	if (GetNetMode() == NM_DedicatedServer && CVarBlasterNetLagSimEnabled.GetValueOnGameThread())
+	{
+		const int32 LagMs = (int32)CVarBlasterNetLagSimPktLag.GetValueOnGameThread();
+		const int32 VarMs = (int32)CVarBlasterNetLagSimVariance.GetValueOnGameThread();
+		GEngine->Exec(GetWorld(), *FString::Printf(TEXT("Net PktLag=%d"), LagMs));
+		GEngine->Exec(GetWorld(), *FString::Printf(TEXT("Net PktLagVariance=%d"), VarMs));
+		UE_LOG(LogTemp, Log, TEXT("[NetLagSim] 服务器下行延迟模拟已注入：PktLag=%dms Variance=%dms"), LagMs, VarMs);
+	}
+
 	// 缓存 GameState 引用并同步阶段时长配置（这些值后续不再变化，但客户端需要知道）
 	BlasterGameState = GetGameState<ABlasterGameState>();
 	if (BlasterGameState)
@@ -122,6 +165,24 @@ void ABombDefusalGameMode::BeginPlay()
 void ABombDefusalGameMode::Tick(float DeltaTime)
 {
 	Super::Tick(DeltaTime);
+
+	// ── 服务器性能采样（简历数据钩子，临时）：每 5s 汇总窗口内平均帧耗时 ──
+	// WHY：DS 无渲染 HUD 且黑窗敲不了命令，帧耗时只能靠代码钩子落日志；
+	// 为"DS 服务器性能"条目提供可量化数据（平均帧耗时 / 实际 tick 率），配合客户端 [FPS] 日志对照。
+	if (GetNetMode() == NM_DedicatedServer)
+	{
+		PerfSampleAccum += DeltaTime;
+		++PerfSampleCount;
+		if (PerfSampleAccum >= 5.0f)
+		{
+			UE_LOG(LogTemp, Log, TEXT("[Perf] 服务器 tick 窗口: 平均帧耗时=%.2fms (实际 %.1fHz) | 样本=%d"),
+				PerfSampleAccum / PerfSampleCount * 1000.f,
+				PerfSampleCount / PerfSampleAccum,
+				PerfSampleCount);
+			PerfSampleAccum = 0.f;
+			PerfSampleCount = 0;
+		}
+	}
 
 	if (MatchState == MatchState::WaitingToStart)
 	{

@@ -12,6 +12,11 @@ void UBuyMenu::NativeConstruct()
     if (ABlasterPlayerState* PS = GetOwningPlayerState<ABlasterPlayerState>())
     {
         PS->OnMoneyChanged.AddDynamic(this, &UBuyMenu::OnMoneyChangedHandler);
+
+        // ── 初始刷新（bug 修复，同 CharacterOverlay）──
+        // 打开商店时初始金钱的复制早已到达、OnRep_Money 广播在绑定前已错过，
+        // 主动读一次当前值，否则 MoneyText 停在默认值直到下一笔经济变动。
+        OnMoneyChangedHandler(PS->Money, 0);
     }
 
     // ── 武器按钮绑定 ──

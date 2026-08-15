@@ -26,6 +26,11 @@ public:
 	// 替换为 UBlasterCharacterMovementComponent（引擎官方换组件类方式，见 Character.h 注释）
 	ABlasterCharacter(const FObjectInitializer& ObjectInitializer);
 	virtual void Tick(float DeltaTime) override;
+
+	// ── 客户端插值平滑采样（Phase 2 补下行）──
+	// static 累积缓冲区（连接级共享）：PC 每 1s 读取后清空。
+	// 由 OnRep_ReplicatedMovement 喂入"各角色自己的快照到达间隔"（秒）。
+	static TArray<float> PendingIntervals;
 	virtual void SetupPlayerInputComponent(class UInputComponent* PlayerInputComponent) override;
 	//函数内部注册要复制的变量
 	virtual void GetLifetimeReplicatedProps(TArray<FLifetimeProperty>& OutLifetimeProps) const override;
@@ -55,6 +60,10 @@ protected:
 
 	virtual void BeginPlay() override;
 
+	// 客户端收到移动复制（ReplicatedMovement）时由属性复制系统调用（AActor 虚函数）。
+	// 记录到达墙钟时间、算本角色自己的到达间隔，喂入 static PendingIntervals（Phase 2 采样源）。
+	virtual void OnRep_ReplicatedMovement() override;
+
 	void MoveForward(float Value);
 	void MoveRight(float Value);
 	void Turn(float Value);
@@ -81,6 +90,11 @@ protected:
 	void UpdateHUDHealth();
 	void PollInit();
 private:
+	// ── 客户端插值平滑采样状态（仅客户端 simulated proxy 有意义）──
+	// ★ 实例成员（每角色独立），不能用 static：同批 UDP 包里多个角色的到达只差 ~0.3ms（处理时间），
+	//   与跨 tick 的 ~16ms 真实间隔交替，会产生确定性伪抖动淹没真实网络抖动。
+	double LastSnapshotArrivalTime = -1.0; // 本角色上次快照到达时间（客户端墙钟，秒）
+
 	UPROPERTY(VisibleAnywhere, Category = "Camera")
 	class USpringArmComponent* CameraBoom;
 

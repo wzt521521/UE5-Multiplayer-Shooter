@@ -72,8 +72,12 @@ UBlasterCharacterMovementComponent::UBlasterCharacterMovementComponent()
 	// Phase 1 静态降缓冲：构造时从 CVar 读 τ 默认值写入基类 public 成员。
 	// 这两个成员只对远端角色（simulated proxy）的客户端平滑有意义，
 	// 本地角色（autonomous proxy）与服务器实例不读它们，无副作用。
-	NetworkSimulatedSmoothLocationTime = CVarBlasterNetSmoothLocationTime.GetValueOnGameThread();
-	NetworkSimulatedSmoothRotationTime = CVarBlasterNetSmoothRotationTime.GetValueOnGameThread();
+	// ★ 必须用 GetValueOnAnyThread()：构造函数可能在异步加载线程执行（蓝图类 CDO 构建，
+	// 客户端启动时 FAsyncLoadingThread2 触发）。GetValueOnGameThread() 走 GameThread 快速路径，
+	// 在控制台 shadow 状态下会 ensure 报错（实测客户端启动报
+	// "Ensure condition failed: GetShadowIndex() == 0"）。AnyThread 版线程安全，构造仅跑一次，稍慢无碍。
+	NetworkSimulatedSmoothLocationTime = CVarBlasterNetSmoothLocationTime.GetValueOnAnyThread();
+	NetworkSimulatedSmoothRotationTime = CVarBlasterNetSmoothRotationTime.GetValueOnAnyThread();
 }
 
 // ════════════════════════════════════════════════════════════════

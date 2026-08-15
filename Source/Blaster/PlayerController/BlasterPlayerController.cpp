@@ -31,7 +31,6 @@
 #include "Blaster/Session/SessionManagerSubsystem.h"  // P6 会话：token 落盘/读取/待重连表查询
 #include "Kismet/GameplayStatics.h"
 #include "EngineUtils.h"              // TActorIterator（Phase 2 遍历远端角色应用 τ）
-#include "Engine/NetConnection.h"     // GetAverageLag()（Phase 2 jitter 采样源）
 
 void ABlasterPlayerController::SetupInputComponent()
 {
@@ -682,7 +681,7 @@ void ABlasterPlayerController::CycleSpectateTarget()
 	if (AliveTeammates.Num() == 0) return;   // 无队友不切换（自由飞行）
 
 	// 当前目标下标 → 下一个（循环）；目标不在列表（如刚死亡）→ 从 0 开始
-	// 方案2：视角保持 SpectatorPawn 不变，切换只是改锚定目标（Tick 会锚定新队友位置）。
+	// 视角保持 SpectatorPawn 不变，切换只是改锚定目标（Tick 会锚定新队友位置）。
 	const int32 NextIndex = (AliveTeammates.IndexOfByKey(SpectateTarget.Get()) + 1) % AliveTeammates.Num();
 	SpectateTarget = AliveTeammates[NextIndex];
 	if (GetSpectatorPawn())
@@ -782,31 +781,24 @@ void ABlasterPlayerController::UpdateNetSmoothAdaptive(float DeltaTime)
 	const float SampleDt = NetSmoothLastSampleTime; // 实际采样间隔（≈1s），供 ramp 使用
 	NetSmoothLastSampleTime = 0.f;
 
-	// 采样源：NetConnection 本地可得、采样可控。GetPingInMilliseconds 是复制值，
-	// 更新频率由 PlayerState 复制决定、不可控，故不用。
-	const UNetConnection* Conn = GetNetConnection();
-	// AvgLag 是 UNetConnection 的 public 成员（单位秒），乘 1000 转毫秒与 CVar 阈值对齐
-	const float LagMs = Conn ? Conn->AvgLag * 1000.f : 0.f;
+	// 采样源：读取过去 1s 累积的"各角色快照到达间隔"（纯下行抖动）。
+	// 由 Character 的 OnRep_ReplicatedMovement 喂入 PendingIntervals，
+	// 用客户端墙钟时间、不依赖发送端时间戳（替换混上下行的 AvgLag）。
+	TArray<float>& Intervals = ABlasterCharacter::PendingIntervals;
+	const int32 NumSamples = Intervals.Num();
 
-	// 滚动窗口：保留最近 N=10 个样本（1s 采样 → 10s 窗口），沿用时间同步 RemoveAt(0) 惯例
-	RecentLagSamples.Add(LagMs);
-	const int32 MaxSamples = 10;
-	while (RecentLagSamples.Num() > MaxSamples)
-	{
-		RecentLagSamples.RemoveAt(0);
-	}
-
-	// jitter = 相邻样本差的绝对值平均，对单次尖峰稳健（与项目"抗尖峰"一贯思路一致）
+	// jitter = 相邻间隔差的绝对值平均，对单次尖峰稳健（与项目"抗尖峰"一贯思路一致）
 	float JitterMs = 0.f;
-	if (RecentLagSamples.Num() >= 2)
+	if (NumSamples >= 3)
 	{
 		float SumDiff = 0.f;
-		for (int32 i = 1; i < RecentLagSamples.Num(); ++i)
+		for (int32 i = 1; i < NumSamples; ++i)
 		{
-			SumDiff += FMath::Abs(RecentLagSamples[i] - RecentLagSamples[i - 1]);
+			SumDiff += FMath::Abs(Intervals[i] - Intervals[i - 1]);
 		}
-		JitterMs = SumDiff / (RecentLagSamples.Num() - 1);
+		JitterMs = (SumDiff / (NumSamples - 1)) * 1000.f; // 秒 → 毫秒
 	}
+	Intervals.Reset(); // 清空，下个采样周期重新累积
 
 	// 映射目标 τ：低抖动 → MinTau（更跟手），高抖动 → MaxTau（兜底），中间线性
 	const float LowMs = CVarBlasterNetSmoothAdaptiveLowJitterMs.GetValueOnGameThread();
@@ -835,7 +827,7 @@ void ABlasterPlayerController::UpdateNetSmoothAdaptive(float DeltaTime)
 	}
 
 	UE_LOG(LogTemp, Log, TEXT("[NetSmooth] jitter=%.1fms targetTau=%.3f currentTau=%.3f | samples=%d"),
-		JitterMs, TargetTau, CurrentTau, RecentLagSamples.Num());
+		JitterMs, TargetTau, CurrentTau, NumSamples);
 }
 
 float ABlasterPlayerController::GetServerTime()
