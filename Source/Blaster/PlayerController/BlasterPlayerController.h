@@ -33,7 +33,7 @@ void SetHUDMatchCountdown(float CountdownTime);
 	virtual void GetLifetimeReplicatedProps(TArray<FLifetimeProperty>& OutLifetimeProps) const override;
 	virtual float GetServerTime();
 	// P3 开火时间窗校验：是否已完成与服务端的时钟同步（服务端本地标志，不复制）。
-	// 客户端每 5s 自动发起 ServerRequestServerTime，服务端收到请求即置 true；
+	// 客户端每 3s 自动发起 ServerRequestServerTime，服务端收到请求即置 true；
 	// 同步前跳过 ClientShotTime 窗口校验，避免热身期/刚进场误杀。
 	FORCEINLINE bool HasSyncedServerTime() const { return bHasSyncedTime; }
 	virtual void ReceivedPlayer() override;
@@ -157,7 +157,7 @@ protected:
 	bool bHasSyncedTime = false;
 
 	UPROPERTY(EditAnywhere, Category = Time)
-	float TimeSyncFrequency = 5.f;
+	float TimeSyncFrequency = 3.f;
 
 	float TimeSyncRunningTime = 0.f;
 	void CheckTimeSync(float DeltaTime);

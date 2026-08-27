@@ -20,8 +20,42 @@
 // 纯数学相交辅助函数
 // ════════════════════════════════════════════════════════════════
 
-// 骨骼的近似碰撞半径（用于 head / pelvis / spine 等骨骼的射线-球体判定）
-static constexpr float BONE_RADIUS = 12.f;
+// 按骨骼语义配置数学球半径（cm）。
+// WHY：统一 12cm 会放大颈部/小臂并缩小躯干/骨盆，既降低姿态拟合精度，也容易让
+// neck 球抢在 head 球前面命中。半径属于骨架语义的静态配置，无需每帧写进历史快照。
+// HOW：FrameHistory 仍只记录 BoneName + 历史世界位置；HitScan 与 Shotgun 共用
+// MathTraceSingleRay，在回退判定时按 BoneName 查询半径并构造数学球。
+static float GetSSRBoneRadius(const FName& BoneName)
+{
+	static const TMap<FName, float> BoneRadii = []
+	{
+		TMap<FName, float> Result;
+		Result.Reserve(14);
+		Result.Add(FName(TEXT("head")),       12.f);
+		Result.Add(FName(TEXT("neck_01")),     8.f);
+		Result.Add(FName(TEXT("spine_01")),   15.f);
+		Result.Add(FName(TEXT("spine_02")),   16.f);
+		Result.Add(FName(TEXT("spine_03")),   17.f);
+		Result.Add(FName(TEXT("pelvis")),     18.f);
+		Result.Add(FName(TEXT("upperarm_l")), 10.f);
+		Result.Add(FName(TEXT("lowerarm_l")),  8.f);
+		Result.Add(FName(TEXT("upperarm_r")), 10.f);
+		Result.Add(FName(TEXT("lowerarm_r")),  8.f);
+		Result.Add(FName(TEXT("thigh_l")),    13.f);
+		Result.Add(FName(TEXT("calf_l")),     10.f);
+		Result.Add(FName(TEXT("thigh_r")),    13.f);
+		Result.Add(FName(TEXT("calf_r")),     10.f);
+		return Result;
+	}();
+
+	if (const float* ConfiguredRadius = BoneRadii.Find(BoneName))
+	{
+		return *ConfiguredRadius;
+	}
+
+	// 未配置的新骨骼保持旧行为，避免扩展名单后因半径为 0 而完全无法命中。
+	return 12.f;
+}
 
 // 射线-球体相交：返回沿射线方向的参数 t（RayDir 必须是单位向量），无交点返回 -1
 static float RaySphereIntersect(const FVector& RayOrigin, const FVector& RayDir,
@@ -155,7 +189,8 @@ static FSSR_TraceResult MathTraceSingleRay(
 		FName PlayerBestBone = NAME_None;
 		for (const FSSR_BoneSnapshot& Bone : Entry.BoneSnapshots)
 		{
-			const float t = RaySphereIntersect(TraceStart, RayDir, Bone.Location, BONE_RADIUS);
+			const float BoneRadius = GetSSRBoneRadius(Bone.BoneName);
+			const float t = RaySphereIntersect(TraceStart, RayDir, Bone.Location, BoneRadius);
 			if (t > 0.f && t <= MaxDist && t < PlayerBestBoneT)
 			{
 				PlayerBestBoneT = t;

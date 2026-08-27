@@ -381,7 +381,7 @@ void ABlasterPlayerController::SetHUDAnnouncementCountdown(float CountdownTime)
 }
 
 // ------------------------------------------------------------
-// 时间同步中位数滤波窗口（样本数）：每 5s 一个样本，N=7 需 35s 填满。
+// 时间同步中位数滤波窗口（样本数）：每 3s 一个样本，N=7 需 21s 填满。
 // 抗主机延迟尖峰：单次采样会被某次系统忙的读数带偏，取中位更稳。
 TAutoConsoleVariable<int32> CVarTimeSyncMedianWindow(
 	TEXT("blaster.TimeSync.MedianWindowSize"),
