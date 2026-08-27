@@ -124,9 +124,13 @@ static FSSR_TraceResult MathTraceSingleRay(
 	const FVector RayDir = (TraceEnd - TraceStart).GetSafeNormal();  // 方向归一化成单位向量（t 即世界距离 cm）
 	const float MaxDist = (TraceEnd - TraceStart).Size();            // 射线总长 = 最大命中距离（超出射程不算命中）
 
-	float BestT = TNumericLimits<float>::Max();   // 目前最近命中的距离（初始"无穷大"）
-	ABlasterCharacter* BestChar = nullptr;         // 目前最近的命中者（初始"没人"）
-	FName BestBone = NAME_None;                    // 目前命中的部位（初始"无"）
+	// 玩家之间用最先接触到的外层碰撞距离排序，玩家内部则优先采用骨骼球做部位分类。
+	// WHY：若只共用一个 BestT，包在骨骼外面的胶囊入口总会更近，从而把 head 覆盖成 body；
+	// 但若完全忽略胶囊距离，前方玩家又可能挡不住后方玩家。因此拆成遮挡距离与实际命中距离。
+	float BestOrderingT = TNumericLimits<float>::Max(); // 决定前后遮挡关系：胶囊/骨骼中的最前交点
+	float BestImpactT = TNumericLimits<float>::Max();   // 决定最终命中点：骨骼优先，骨骼全 miss 才用胶囊
+	ABlasterCharacter* BestChar = nullptr;              // 目前最近的命中者（初始"没人"）
+	FName BestBone = NAME_None;                         // 具体骨骼名；None 表示胶囊兜底的普通伤害
 
 	// ── 遍历历史帧里的所有玩家，对每人打这根射线 ──
 	for (const FSSR_PlayerFrameEntry& Entry : HistoricalFrame.PlayerEntries)
@@ -145,30 +149,43 @@ static FSSR_TraceResult MathTraceSingleRay(
 			TraceStart.X, TraceStart.Y, TraceStart.Z,
 			RayDir.X, RayDir.Y, RayDir.Z);
 
-		// 1. 骨骼球体命中（用于判定爆头/肢体）
-		//    对每根骨骼的小球（球心 = Bone.Location，半径 = BONE_RADIUS）做射线相交
+		// 1. 先在当前玩家内部寻找最近骨骼球。这里不能直接更新全局结果，否则随后更近的
+		// 外层胶囊会覆盖部位信息，导致 head 无法稳定进入爆头伤害分支。
+		float PlayerBestBoneT = TNumericLimits<float>::Max();
+		FName PlayerBestBone = NAME_None;
 		for (const FSSR_BoneSnapshot& Bone : Entry.BoneSnapshots)
 		{
 			const float t = RaySphereIntersect(TraceStart, RayDir, Bone.Location, BONE_RADIUS);
-			// 有效命中三条件：射线前方(t>0) + 射程内(t<=MaxDist) + 比当前最近更近(t<BestT)
-			if (t > 0.f && t <= MaxDist && t < BestT)
+			if (t > 0.f && t <= MaxDist && t < PlayerBestBoneT)
 			{
-				BestT = t;
-				BestChar = OtherChar;
-				BestBone = Bone.BoneName;  // 记住是哪个部位（head = 爆头）
+				PlayerBestBoneT = t;
+				PlayerBestBone = Bone.BoneName;
 			}
 		}
 
-		// 2. 胶囊体命中（覆盖整个身体，兜底）
-		//    骨骼球都没中时，整身胶囊体接住 → BoneName 置 None = 普通身体伤害
+		// 2. 胶囊仍承担两个职责：所有骨骼球 miss 时提供普通伤害兜底；同时用它的
+		// 更靠前入口参与玩家间排序，保证前方玩家能够遮挡后方玩家。
 		const float tCapsule = RayCapsuleIntersect(TraceStart, RayDir,
 			Entry.CapsuleLocation, Entry.CapsuleRotation,
 			Entry.CapsuleHalfHeight, Entry.CapsuleRadius);
-		if (tCapsule > 0.f && tCapsule <= MaxDist && tCapsule < BestT)
+		const bool bBoneHit = PlayerBestBoneT < TNumericLimits<float>::Max();
+		const bool bCapsuleHit = tCapsule > 0.f && tCapsule <= MaxDist;
+		if (!bBoneHit && !bCapsuleHit) continue;
+
+		// HOW：骨骼命中决定部位与实际 ImpactPoint；没有骨骼命中才退回胶囊 body。
+		// OrderingT 单独取最前交点，只用于与其他玩家比较谁挡在射线前面。
+		const float PlayerImpactT = bBoneHit ? PlayerBestBoneT : tCapsule;
+		const float PlayerOrderingT = bBoneHit && bCapsuleHit
+			? FMath::Min(PlayerBestBoneT, tCapsule)
+			: PlayerImpactT;
+		const FName PlayerBone = bBoneHit ? PlayerBestBone : NAME_None;
+
+		if (PlayerOrderingT < BestOrderingT)
 		{
-			BestT = tCapsule;
+			BestOrderingT = PlayerOrderingT;
+			BestImpactT = PlayerImpactT;
 			BestChar = OtherChar;
-			BestBone = NAME_None;  // 身体命中，不是具体部位
+			BestBone = PlayerBone;
 		}
 	}
 
@@ -176,15 +193,15 @@ static FSSR_TraceResult MathTraceSingleRay(
 	if (BestChar)
 	{
 		Result.bHit = true;
-		Result.ImpactPoint = TraceStart + RayDir * BestT;  // 命中点 = 起点 + 方向 × 最近 t
+		Result.ImpactPoint = TraceStart + RayDir * BestImpactT; // 骨骼命中点；无骨骼时为胶囊兜底点
 		Result.BoneName = BestBone;                        // 部位（ApplySSRDamage 判爆头用）
 		Result.HitActor = BestChar;                        // 被命中角色（伤害对象）
 
-		UE_LOG(LogTemp, Log, TEXT("[SSR] ✓ MATH HIT | Target=%s | Bone=%s | Impact=(%.0f, %.0f, %.0f) | t=%.1f"),
+		UE_LOG(LogTemp, Log, TEXT("[SSR] ✓ MATH HIT | Target=%s | Bone=%s | Impact=(%.0f, %.0f, %.0f) | impactT=%.1f | orderT=%.1f"),
 			*GetNameSafe(BestChar),
 			BestBone.IsNone() ? TEXT("body") : *BestBone.ToString(),
 			Result.ImpactPoint.X, Result.ImpactPoint.Y, Result.ImpactPoint.Z,
-			BestT);
+			BestImpactT, BestOrderingT);
 	}
 	else
 	{
