@@ -80,6 +80,23 @@ UBlasterCharacterMovementComponent::UBlasterCharacterMovementComponent()
 	NetworkSimulatedSmoothRotationTime = CVarBlasterNetSmoothRotationTime.GetValueOnAnyThread();
 }
 
+void UBlasterCharacterMovementComponent::SetAdaptiveSmoothLocationTime(float NewSmoothTime)
+{
+	const float ClampedSmoothTime = FMath::Max(0.f, NewSmoothTime);
+
+	// PredictionData 尚未创建时，它会在构造时读取此配置值。
+	NetworkSimulatedSmoothLocationTime = ClampedSmoothTime;
+
+	// PredictionData 已创建后，指数平滑实际读取的是这里的缓存值，必须同步更新。
+	if (HasPredictionData_Client())
+	{
+		if (FNetworkPredictionData_Client_Character* ClientData = GetPredictionData_Client_Character())
+		{
+			ClientData->SmoothNetUpdateTime = ClampedSmoothTime;
+		}
+	}
+}
+
 // ════════════════════════════════════════════════════════════════
 // 服务端移动校验主入口
 // 引擎在所有 ServerMove 变体处理时汇入此函数（ServerMoveHandleClientError）；

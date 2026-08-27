@@ -32,6 +32,9 @@ void SetHUDMatchCountdown(float CountdownTime);
 	virtual void Tick(float DeltaTime) override;
 	virtual void GetLifetimeReplicatedProps(TArray<FLifetimeProperty>& OutLifetimeProps) const override;
 	virtual float GetServerTime();
+	// 仅当下行采样已完成切图预热，且调用者属于当前采样 World 时返回 true。
+	// Character::OnRep_ReplicatedMovement 用它阻止切图期间继续写入旧的静态样本缓冲区。
+	bool IsNetSmoothSamplingActive(const UWorld* SampleWorld) const;
 	// P3 开火时间窗校验：是否已完成与服务端的时钟同步（服务端本地标志，不复制）。
 	// 客户端每 3s 自动发起 ServerRequestServerTime，服务端收到请求即置 true；
 	// 同步前跳过 ClientShotTime 窗口校验，避免热身期/刚进场误杀。
@@ -168,6 +171,9 @@ protected:
 	// jitter 是连接级属性，共享一个 CurrentTau 应用到所有 simulated proxy。
 	float NetSmoothLastSampleTime = 0.f;     // 距上次采样的累计秒数
 	float CurrentTau = 0.05f;                // 平滑后的 τ（持久状态，向 TargetTau 匀速逼近）
+	TWeakObjectPtr<UWorld> NetSmoothSamplingWorld; // PC 无缝切图保留时，用 World 变化识别采样生命周期边界
+	float NetSmoothWarmupRemaining = 0.f;    // 新 World 建立后暂停采样，等待复制流稳定
+	bool bNetSmoothSamplingActive = false;
 	void UpdateNetSmoothAdaptive(float DeltaTime);
 
 	UFUNCTION(Server, Reliable)

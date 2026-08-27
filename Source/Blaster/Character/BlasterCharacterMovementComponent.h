@@ -47,6 +47,11 @@ class BLASTER_API UBlasterCharacterMovementComponent : public UCharacterMovement
 public:
 	UBlasterCharacterMovementComponent();
 
+	// 运行时更新客户端 simulated proxy 的指数平滑时间。
+	// UE 5.0 会在 ClientPredictionData 创建时把配置字段复制到 SmoothNetUpdateTime，
+	// 后续只改 NetworkSimulatedSmoothLocationTime 不会影响已创建的运行时数据。
+	void SetAdaptiveSmoothLocationTime(float NewSmoothTime);
+
 protected:
 	// 服务端每个 ServerMove 到达时由引擎调用（ServerMoveHandleClientError）
 	// 返回 true → 引擎向客户端发校正（ClientAdjustPosition）

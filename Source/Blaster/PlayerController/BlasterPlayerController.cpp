@@ -12,6 +12,7 @@
 #include "Components/Image.h"
 #include "Sound/SoundCue.h"
 #include "Blaster/Character/BlasterCharacter.h"
+#include "Blaster/Character/BlasterCharacterMovementComponent.h"
 #include "Blaster/BlasterComponents/ThrowableComponent.h"
 #include "GameFramework/SpectatorPawn.h"   // P1 观战：GetSpectatorPawn() 转 AActor* 需要完整类型
 #include "Net/UnrealNetwork.h"
@@ -774,6 +775,35 @@ void ABlasterPlayerController::UpdateNetSmoothAdaptive(float DeltaTime)
 	if (!IsLocalController()) return;
 	if (!CVarBlasterNetSmoothAdaptiveEnabled.GetValueOnGameThread()) return;
 
+	// Seamless Travel 会保留 PlayerController，不能依赖 BeginPlay 重置采样状态。
+	// World 指针变化可同时覆盖大厅→过渡图→比赛图以及比赛图→过渡图→大厅。
+	UWorld* CurrentWorld = GetWorld();
+	if (!CurrentWorld) return;
+	if (NetSmoothSamplingWorld.Get() != CurrentWorld)
+	{
+		NetSmoothSamplingWorld = CurrentWorld;
+		ABlasterCharacter::PendingIntervals.Reset();
+		NetSmoothLastSampleTime = 0.f;
+		NetSmoothWarmupRemaining = 1.f;
+		bNetSmoothSamplingActive = false;
+		UE_LOG(LogTemp, Log, TEXT("[NetSmooth] World changed: samples reset, sampling paused for %.1fs | World=%s"),
+			NetSmoothWarmupRemaining, *CurrentWorld->GetName());
+		return;
+	}
+
+	// 等待新 World 的角色与复制通道稳定。Character 在此期间也会清掉自己的到达时间基准。
+	if (!bNetSmoothSamplingActive)
+	{
+		NetSmoothWarmupRemaining = FMath::Max(0.f, NetSmoothWarmupRemaining - DeltaTime);
+		if (NetSmoothWarmupRemaining > 0.f) return;
+
+		ABlasterCharacter::PendingIntervals.Reset();
+		NetSmoothLastSampleTime = 0.f;
+		bNetSmoothSamplingActive = true;
+		UE_LOG(LogTemp, Log, TEXT("[NetSmooth] Sampling resumed | World=%s"), *CurrentWorld->GetName());
+		return;
+	}
+
 	// ~1s 采样一次延迟。抖动是快变量，但"调整 τ"的决策 1s 粒度足够；
 	// 平滑值的应用本身是引擎逐帧自动做的，不需要逐帧改。
 	NetSmoothLastSampleTime += DeltaTime;
@@ -815,19 +845,28 @@ void ABlasterPlayerController::UpdateNetSmoothAdaptive(float DeltaTime)
 
 	// 应用：遍历所有远端角色（simulated proxy），把平滑后的 CurrentTau 写进其 CMC。
 	// jitter 是连接级属性，所有 simulated proxy 共享同一个 τ，不做 per-actor 差异化。
-	// NetworkSimulatedSmoothLocationTime 是基类 public 成员，用基类指针直接写即可。
+	// UE 5.0 的指数平滑实际读取 ClientPredictionData->SmoothNetUpdateTime；
+	// 通过自定义 Setter 同步配置字段与已创建的运行时缓存，确保动态 τ 真正生效。
 	for (TActorIterator<ABlasterCharacter> It(GetWorld()); It; ++It)
 	{
 		ABlasterCharacter* Ch = *It;
 		if (!Ch || Ch->GetLocalRole() != ROLE_SimulatedProxy) continue;
-		if (UCharacterMovementComponent* CMC = Ch->GetCharacterMovement())
+		if (UBlasterCharacterMovementComponent* CMC = Cast<UBlasterCharacterMovementComponent>(Ch->GetCharacterMovement()))
 		{
-			CMC->NetworkSimulatedSmoothLocationTime = CurrentTau;
+			CMC->SetAdaptiveSmoothLocationTime(CurrentTau);
 		}
 	}
 
 	UE_LOG(LogTemp, Log, TEXT("[NetSmooth] jitter=%.1fms targetTau=%.3f currentTau=%.3f | samples=%d"),
 		JitterMs, TargetTau, CurrentTau, NumSamples);
+}
+
+bool ABlasterPlayerController::IsNetSmoothSamplingActive(const UWorld* SampleWorld) const
+{
+	return IsLocalController() &&
+		bNetSmoothSamplingActive &&
+		SampleWorld != nullptr &&
+		NetSmoothSamplingWorld.Get() == SampleWorld;
 }
 
 float ABlasterPlayerController::GetServerTime()

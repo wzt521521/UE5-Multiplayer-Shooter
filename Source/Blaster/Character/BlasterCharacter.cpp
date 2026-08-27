@@ -110,6 +110,16 @@ void ABlasterCharacter::OnRep_ReplicatedMovement()
 	// 实测整场零 Role=2 触发：主人连接的自己角色 ReplicatedMovement 不会到达，此守卫是双保险。
 	if (GetLocalRole() != ROLE_SimulatedProxy) return;
 
+	// PC 在 Seamless Travel 中会跨 World 保留；切图期间禁止继续向 static 缓冲写样本。
+	// 暂停时同时丢弃本角色旧时间基准，确保恢复后的首包只建基准，不产生约 1s 的假间隔。
+	const ABlasterPlayerController* LocalPC =
+		GetWorld() ? Cast<ABlasterPlayerController>(GetWorld()->GetFirstPlayerController()) : nullptr;
+	if (!LocalPC || !LocalPC->IsNetSmoothSamplingActive(GetWorld()))
+	{
+		LastSnapshotArrivalTime = -1.0;
+		return;
+	}
+
 	const double Now = GetWorld()->GetTimeSeconds();
 	if (LastSnapshotArrivalTime >= 0.0)
 	{
