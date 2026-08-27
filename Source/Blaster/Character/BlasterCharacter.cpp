@@ -983,12 +983,11 @@ void ABlasterCharacter::CaptureHitboxState(FSSR_PlayerFrameEntry& OutEntry)
 		// 防御：角色骨架可能没有这根骨骼（不同角色模型骨骼命名不同），找不到就跳过不录
 		if (BoneIndex == INDEX_NONE) continue;
 
-		// ── 组件空间 → 世界空间 ──
-		// BoneCS：骨骼相对"网格体原点"的坐标（本地/组件空间，动画驱动的是这一层）
-		// BoneWS = BoneCS × MeshWorldTM：乘上网格体的世界变换 → 骨骼的"世界坐标"
-		//   （判定射线是世界空间，球心必须是世界坐标才能直接比——这就是"本地→世界"的实现）
-		const FTransform BoneCS = SkMesh->GetBoneTransform(BoneIndex);
-		const FTransform BoneWS = BoneCS * MeshWorldTM;
+		// WHY：GetBoneTransform(Index) 已返回世界空间 Transform；不能再次乘
+		// MeshWorldTM，否则会重复应用角色的世界平移/旋转并写入错误的骨骼球心。
+		// HOW：本函数虽为遗留无调用路径，但与 FrameHistory 的正式录制语义保持一致，
+		// 让未来若重新启用时仍能直接向世界空间 SSR 射线提供正确坐标。
+		const FTransform BoneWS = SkMesh->GetBoneTransform(BoneIndex);
 
 		// 填一条骨骼快照：
 		FSSR_BoneSnapshot BoneSnap;

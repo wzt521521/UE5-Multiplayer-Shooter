@@ -233,9 +233,11 @@ void USSR_FrameHistory::CapturePlayerEntry(ABlasterCharacter* Player, FSSR_Playe
 		const int32 BoneIndex = Mesh->GetBoneIndex(BoneName);
 		if (BoneIndex == INDEX_NONE) continue;
 
-		// GetBoneTransform 返回 Component Space → 乘上 Mesh 的 World Transform 得世界空间
-		const FTransform BoneCS = Mesh->GetBoneTransform(BoneIndex);
-		const FTransform BoneWS = BoneCS * MeshWorldTM;
+		// WHY：UE5 的 GetBoneTransform(Index) 已经把骨骼的组件空间姿态乘过
+		// Mesh ComponentToWorld，返回世界空间 Transform；再次乘 MeshWorldTM 会让
+		// 角色的世界平移/旋转重复应用，导致 SSR 记录的数学球心偏离真实骨骼。
+		// HOW：SSR_RewindManager 的射线也使用世界坐标，因此直接保存此结果即可。
+		const FTransform BoneWS = Mesh->GetBoneTransform(BoneIndex);
 
 		FSSR_BoneSnapshot BoneSnapshot;
 		BoneSnapshot.BoneName = BoneName;
