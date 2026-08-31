@@ -40,3 +40,6 @@ Packaged/
 
 # 本地布局
 Config/Layouts/
+
+# Codex 项目本地记忆
+AGENTS.md

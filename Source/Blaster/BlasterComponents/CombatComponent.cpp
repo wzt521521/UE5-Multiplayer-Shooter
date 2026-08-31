@@ -49,12 +49,12 @@ TAutoConsoleVariable<float> CVarBlasterFireTimePastExtra(
 );
 
 // 枪口到角色最大距离（防"伪造枪口到墙另一侧"；仅 SSR 路径 ClientMuzzle 非零时校验）
-// 真实枪口距角色中心 50-150cm，动画/位移抖动+desync 余量后 300cm 足够；
+// 真实枪口距角色中心约 50-150cm，动画/位移去同步余量后上限设为 250cm；
 // 原 1000cm 形同虚设——10m 足够跨过绝大多数墙，让枪口伪造几乎不受约束（P2 修复）。
 TAutoConsoleVariable<float> CVarBlasterFireMaxMuzzleDist(
 	TEXT("blaster.Fire.MaxMuzzleDist"),
-	300.f,
-	TEXT("枪口到角色最大距离（cm），防伪造枪口；真实约 50-150，抖动余量到 300"),
+	250.f,
+	TEXT("枪口到角色最大距离（cm），防伪造枪口；当前上限 250"),
 	ECVF_Default
 );
 
@@ -969,5 +969,3 @@ bool UCombatComponent::PickupAmmo(EWeaponType WeaponType, int32 AmmoAmount)
 
 	return false; // 拾取失败（无装备武器或类型不匹配），通知调用方显示提示
 }
-
-
